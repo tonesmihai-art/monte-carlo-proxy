@@ -1,20 +1,21 @@
 """
-Proxy FastAPI — rezolva CORS + Yahoo crumb auth pentru Monte Carlo Stocks
-Deployabil gratuit pe Render.com
+Proxy FastAPI — Monte Carlo Stocks
+Yahoo: foloseste yfinance (gestioneaza sesiunea intern, recunoscut de Yahoo)
+Altele: httpx direct
 """
 
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import httpx
+import yfinance as yf
+import re
 
 app = FastAPI()
 
-ALLOWED_ORIGINS = ["*"]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
+    allow_origins=["*"],
     allow_methods=["GET"],
     allow_headers=["*"],
 )
@@ -31,48 +32,31 @@ WHITELIST = [
 ]
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-_yahoo_crumb = None
-_yahoo_cookies = {}
-
-
-async def _get_yahoo_crumb(client: httpx.AsyncClient):
-    global _yahoo_crumb, _yahoo_cookies
-    if _yahoo_crumb:
-        return _yahoo_crumb
-    try:
-        r1 = await client.get(
-            "https://finance.yahoo.com/",
-            headers={**HEADERS, "Accept": "text/html,application/xhtml+xml,*/*"},
-            follow_redirects=True,
-            timeout=10.0,
-        )
-        _yahoo_cookies = dict(r1.cookies)
-        r2 = await client.get(
-            "https://query1.finance.yahoo.com/v1/test/getcrumb",
-            headers=HEADERS,
-            cookies=_yahoo_cookies,
-            timeout=8.0,
-        )
-        crumb = r2.text.strip()
-        if crumb and len(crumb) > 3 and "<" not in crumb:
-            _yahoo_crumb = crumb
-            return _yahoo_crumb
-    except Exception:
-        pass
-    return None
-
 
 def _is_allowed(url: str) -> bool:
-    return any(domain in url for domain in WHITELIST)
+    return any(d in url for d in WHITELIST)
 
 
 def _is_yahoo(url: str) -> bool:
     return "yahoo.com" in url
+
+
+def _extract_ticker(url: str) -> str | None:
+    """Extrage ticker-ul din URL-ul Yahoo."""
+    # /v8/finance/chart/NESN.SW  sau  /v7/finance/options/NESN.SW
+    m = re.search(r'/finance/(?:chart|options|quote)/([^/?&]+)', url)
+    if m:
+        return m.group(1)
+    # ?symbols=NESN.SW
+    m = re.search(r'[?&]symbols?=([^&]+)', url)
+    if m:
+        return m.group(1).split(',')[0]
+    return None
 
 
 @app.get("/proxy")
@@ -80,42 +64,101 @@ async def proxy(url: str = Query(...)):
     if not _is_allowed(url):
         raise HTTPException(status_code=403, detail="Domeniu nepermis")
 
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers=HEADERS) as client:
-        fetch_url = url
-        cookies = {}
+    # ── Yahoo: folosim yfinance care gestioneaza auth intern ──
+    if _is_yahoo(url):
+        ticker_sym = _extract_ticker(url)
 
-        if _is_yahoo(url):
-            crumb = await _get_yahoo_crumb(client)
-            if crumb:
-                sep = "&" if "?" in url else "?"
-                fetch_url = f"{url}{sep}crumb={crumb}"
-                cookies = _yahoo_cookies
+        # chart endpoint → date istorice
+        if ticker_sym and '/chart/' in url:
+            try:
+                t    = yf.Ticker(ticker_sym)
+                hist = t.history(period="1y", interval="1d", auto_adjust=False)
+                if hist.empty:
+                    raise HTTPException(status_code=404, detail="Date indisponibile")
 
-        try:
-            r = await client.get(fetch_url, cookies=cookies, headers=HEADERS)
+                closes     = [round(float(v), 4) for v in hist['Close'].tolist()]
+                volumes    = [int(v) for v in hist['Volume'].tolist()]
+                timestamps = [int(ts.timestamp()) for ts in hist.index.to_pydatetime()]
 
-            if r.status_code == 401 and _is_yahoo(url):
-                global _yahoo_crumb
-                _yahoo_crumb = None
-                crumb = await _get_yahoo_crumb(client)
-                if crumb:
-                    sep = "&" if "?" in url else "?"
-                    fetch_url = f"{url}{sep}crumb={crumb}"
-                    r = await client.get(fetch_url, cookies=_yahoo_cookies, headers=HEADERS)
+                info = t.info or {}
+                return JSONResponse({
+                    "chart": {"result": [{
+                        "meta": {
+                            "symbol":                ticker_sym,
+                            "currency":              info.get("currency", "USD"),
+                            "longName":              info.get("longName", ticker_sym),
+                            "shortName":             info.get("shortName", ticker_sym),
+                            "sharesOutstanding":     info.get("sharesOutstanding"),
+                            "epsTrailingTwelveMonths": info.get("trailingEps"),
+                            "trailingPE":            info.get("trailingPE"),
+                            "forwardPE":             info.get("forwardPE"),
+                        },
+                        "timestamp": timestamps,
+                        "indicators": {
+                            "quote": [{
+                                "close":  closes,
+                                "volume": volumes,
+                            }]
+                        }
+                    }], "error": None}
+                })
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
 
+        # quoteSummary / quote endpoint → date fundamentale
+        if ticker_sym:
+            try:
+                t    = yf.Ticker(ticker_sym)
+                info = t.info or {}
+                if not info:
+                    raise HTTPException(status_code=404, detail="Date indisponibile")
+
+                shares = info.get("sharesOutstanding")
+                fcf    = info.get("freeCashflow")
+                fcfps  = (fcf / shares) if (fcf and shares and shares > 0) else None
+
+                return JSONResponse({
+                    "quoteSummary": {"result": [{
+                        "financialData": {
+                            "totalCash":      {"raw": info.get("totalCash")},
+                            "totalDebt":      {"raw": info.get("totalDebt")},
+                            "freeCashflow":   {"raw": fcf},
+                            "earningsGrowth": {"raw": info.get("earningsGrowth")},
+                            "revenueGrowth":  {"raw": info.get("revenueGrowth")},
+                        },
+                        "defaultKeyStatistics": {
+                            "sharesOutstanding": {"raw": shares},
+                            "trailingEps":       {"raw": info.get("trailingEps")},
+                            "forwardEps":        {"raw": info.get("forwardEps")},
+                        },
+                        "summaryDetail": {
+                            "trailingPE": {"raw": info.get("trailingPE")},
+                            "forwardPE":  {"raw": info.get("forwardPE")},
+                        },
+                    }], "error": None}
+                })
+            except HTTPException:
+                raise
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+
+    # ── Non-Yahoo: httpx direct ───────────────────────
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers=HEADERS) as client:
+            r = await client.get(url)
             try:
                 data = r.json()
             except Exception:
                 data = r.text
-
             return JSONResponse(content=data, status_code=r.status_code)
-
-        except httpx.TimeoutException:
-            raise HTTPException(status_code=504, detail="Timeout")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Timeout")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "crumb_cached": _yahoo_crumb is not None}
+    return {"status": "ok"}
