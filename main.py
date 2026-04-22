@@ -47,12 +47,15 @@ def _is_yahoo(url: str) -> bool:
 
 
 def _extract_ticker(url: str) -> str | None:
-    """Extrage ticker-ul din URL-ul Yahoo."""
-    # /v8/finance/chart/NESN.SW  sau  /v7/finance/options/NESN.SW
-    m = re.search(r'/finance/(?:chart|options|quote)/([^/?&]+)', url)
+    """Extrage ticker-ul din orice URL Yahoo Finance."""
+    # /v8/finance/chart/NESN.SW
+    # /v7/finance/options/NESN.SW
+    # /v10/finance/quoteSummary/NESN.SW
+    # /v11/finance/quoteSummary/NESN.SW
+    m = re.search(r'/finance/(?:chart|options|quote(?:Summary)?)/([^/?&]+)', url)
     if m:
         return m.group(1)
-    # ?symbols=NESN.SW
+    # ?symbols=NESN.SW  sau  ?symbol=NESN.SW
     m = re.search(r'[?&]symbols?=([^&]+)', url)
     if m:
         return m.group(1).split(',')[0]
