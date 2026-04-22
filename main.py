@@ -13,7 +13,8 @@ app = FastAPI()
 
 # Permite orice origine — sau pune domeniul tau exact pentru securitate
 # ex: ["https://tonesmihai-art.github.io"]
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
+# Permite orice origine — proxy-ul e protejat prin WHITELIST de domenii
+ALLOWED_ORIGINS = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
