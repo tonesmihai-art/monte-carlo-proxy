@@ -117,7 +117,20 @@ async def proxy(url: str = Query(...)):
 
                 shares = info.get("sharesOutstanding")
                 fcf    = info.get("freeCashflow")
-                fcfps  = (fcf / shares) if (fcf and shares and shares > 0) else None
+
+                # totalAssets e in balance_sheet, nu in info
+                total_assets = None
+                try:
+                    bs = t.balance_sheet
+                    if bs is not None and not bs.empty:
+                        for label in ["Total Assets", "TotalAssets"]:
+                            if label in bs.index:
+                                val = bs.loc[label].dropna()
+                                if not val.empty:
+                                    total_assets = float(val.iloc[0])
+                                    break
+                except Exception:
+                    pass
 
                 return JSONResponse({
                     "quoteSummary": {"result": [{
@@ -127,6 +140,7 @@ async def proxy(url: str = Query(...)):
                             "freeCashflow":   {"raw": fcf},
                             "earningsGrowth": {"raw": info.get("earningsGrowth")},
                             "revenueGrowth":  {"raw": info.get("revenueGrowth")},
+                            "totalAssets":    {"raw": total_assets},
                         },
                         "defaultKeyStatistics": {
                             "sharesOutstanding": {"raw": shares},
