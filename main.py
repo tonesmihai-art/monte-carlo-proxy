@@ -1,6 +1,6 @@
 """
 Proxy FastAPI — Monte Carlo Stocks
-Yahoo: foloseste yfinance (gestioneaza sesiunea intern, recunoscut de Yahoo)
+Yahoo: yfinance (gestioneaza auth intern)
 Altele: httpx direct
 """
 
@@ -8,8 +8,7 @@ from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import httpx
-import yfinance as yf
-import re
+import traceback
 
 app = FastAPI()
 
@@ -46,20 +45,48 @@ def _is_yahoo(url: str) -> bool:
     return "yahoo.com" in url
 
 
-def _extract_ticker(url: str) -> str | None:
-    """Extrage ticker-ul din orice URL Yahoo Finance."""
-    # /v8/finance/chart/NESN.SW
-    # /v7/finance/options/NESN.SW
-    # /v10/finance/quoteSummary/NESN.SW
-    # /v11/finance/quoteSummary/NESN.SW
+def _extract_ticker(url: str) -> str:
+    import re
     m = re.search(r'/finance/(?:chart|options|quote(?:Summary)?)/([^/?&]+)', url)
     if m:
         return m.group(1)
-    # ?symbols=NESN.SW  sau  ?symbol=NESN.SW
     m = re.search(r'[?&]symbols?=([^&]+)', url)
     if m:
         return m.group(1).split(',')[0]
-    return None
+    return ""
+
+
+def _yf_ticker_data(ticker_sym: str) -> dict:
+    """Extrage date din yfinance — complet izolat, nu crapa niciodata."""
+    try:
+        import yfinance as yf
+        t = yf.Ticker(ticker_sym)
+
+        # info — cel mai important
+        info = {}
+        try:
+            info = t.info or {}
+        except Exception:
+            pass
+
+        # balance_sheet — optional
+        total_assets = None
+        try:
+            bs = t.balance_sheet
+            if bs is not None and not bs.empty:
+                for label in ["Total Assets", "TotalAssets", "totalAssets"]:
+                    if label in bs.index:
+                        val = bs.loc[label].dropna()
+                        if not val.empty:
+                            total_assets = float(val.iloc[0])
+                            break
+        except Exception:
+            pass
+
+        return {"info": info, "total_assets": total_assets}
+    except Exception as e:
+        print(f"[yfinance] Eroare pentru {ticker_sym}: {e}")
+        return {"info": {}, "total_assets": None}
 
 
 @app.get("/proxy")
@@ -67,109 +94,92 @@ async def proxy(url: str = Query(...)):
     if not _is_allowed(url):
         raise HTTPException(status_code=403, detail="Domeniu nepermis")
 
-    # ── Yahoo: folosim yfinance care gestioneaza auth intern ──
+    # ── Yahoo: yfinance ───────────────────────────────
     if _is_yahoo(url):
         ticker_sym = _extract_ticker(url)
+        if not ticker_sym:
+            raise HTTPException(status_code=400, detail="Ticker negasit in URL")
+
+        # Ruleaza yfinance intr-un thread separat (e sincron)
+        import asyncio
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(None, _yf_ticker_data, ticker_sym)
+
+        info        = data["info"]
+        total_assets = data["total_assets"]
 
         # chart endpoint → date istorice
-        if ticker_sym and '/chart/' in url:
+        if "/chart/" in url:
             try:
+                import yfinance as yf
                 t    = yf.Ticker(ticker_sym)
-                hist = t.history(period="1y", interval="1d", auto_adjust=False)
+                hist = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda: t.history(period="1y", interval="1d", auto_adjust=False)
+                )
                 if hist.empty:
-                    raise HTTPException(status_code=404, detail="Date indisponibile")
+                    raise HTTPException(status_code=404, detail="Date istorice indisponibile")
 
-                closes     = [round(float(v), 4) for v in hist['Close'].tolist()]
-                volumes    = [int(v) for v in hist['Volume'].tolist()]
+                closes     = [round(float(v), 4) for v in hist["Close"].tolist()]
+                volumes    = [int(v) for v in hist["Volume"].tolist()]
                 timestamps = [int(ts.timestamp()) for ts in hist.index.to_pydatetime()]
 
-                info = t.info or {}
                 return JSONResponse({
                     "chart": {"result": [{
                         "meta": {
-                            "symbol":                ticker_sym,
-                            "currency":              info.get("currency", "USD"),
-                            "longName":              info.get("longName", ticker_sym),
-                            "shortName":             info.get("shortName", ticker_sym),
-                            "sharesOutstanding":     info.get("sharesOutstanding"),
+                            "symbol":   ticker_sym,
+                            "currency": info.get("currency", "USD"),
+                            "longName":  info.get("longName",  ticker_sym),
+                            "shortName": info.get("shortName", ticker_sym),
+                            "sharesOutstanding":       info.get("sharesOutstanding"),
                             "epsTrailingTwelveMonths": info.get("trailingEps"),
-                            "trailingPE":            info.get("trailingPE"),
-                            "forwardPE":             info.get("forwardPE"),
+                            "trailingPE": info.get("trailingPE"),
+                            "forwardPE":  info.get("forwardPE"),
                         },
                         "timestamp": timestamps,
-                        "indicators": {
-                            "quote": [{
-                                "close":  closes,
-                                "volume": volumes,
-                            }]
-                        }
+                        "indicators": {"quote": [{"close": closes, "volume": volumes}]}
                     }], "error": None}
                 })
             except HTTPException:
                 raise
             except Exception as e:
+                print(traceback.format_exc())
                 raise HTTPException(status_code=500, detail=str(e))
 
-        # quoteSummary / quote endpoint → date fundamentale
-        if ticker_sym:
-            try:
-                t    = yf.Ticker(ticker_sym)
-                info = t.info or {}
-                if not info:
-                    raise HTTPException(status_code=404, detail="Date indisponibile")
+        # quoteSummary / quote → date fundamentale
+        shares  = info.get("sharesOutstanding")
+        fcf     = info.get("freeCashflow")
+        fcfps   = (fcf / shares) if (fcf and shares and shares > 0) else None
 
-                shares = info.get("sharesOutstanding")
-                fcf    = info.get("freeCashflow")
-
-                # totalAssets e in balance_sheet, nu in info
-                total_assets = None
-                try:
-                    bs = t.balance_sheet
-                    if bs is not None and not bs.empty:
-                        for label in ["Total Assets", "TotalAssets"]:
-                            if label in bs.index:
-                                val = bs.loc[label].dropna()
-                                if not val.empty:
-                                    total_assets = float(val.iloc[0])
-                                    break
-                except Exception:
-                    pass
-
-                return JSONResponse({
-                    "quoteSummary": {"result": [{
-                        "financialData": {
-                            "totalCash":      {"raw": info.get("totalCash")},
-                            "totalDebt":      {"raw": info.get("totalDebt")},
-                            "freeCashflow":   {"raw": fcf},
-                            "earningsGrowth": {"raw": info.get("earningsGrowth")},
-                            "revenueGrowth":  {"raw": info.get("revenueGrowth")},
-                            "totalAssets":    {"raw": total_assets},
-                        },
-                        "defaultKeyStatistics": {
-                            "sharesOutstanding": {"raw": shares},
-                            "trailingEps":       {"raw": info.get("trailingEps")},
-                            "forwardEps":        {"raw": info.get("forwardEps")},
-                        },
-                        "summaryDetail": {
-                            "trailingPE": {"raw": info.get("trailingPE")},
-                            "forwardPE":  {"raw": info.get("forwardPE")},
-                        },
-                    }], "error": None}
-                })
-            except HTTPException:
-                raise
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
+        return JSONResponse({
+            "quoteSummary": {"result": [{
+                "financialData": {
+                    "totalCash":    {"raw": info.get("totalCash")},
+                    "totalDebt":    {"raw": info.get("totalDebt")},
+                    "freeCashflow": {"raw": fcf},
+                    "totalAssets":  {"raw": total_assets},
+                    "earningsGrowth": {"raw": info.get("earningsGrowth")},
+                    "revenueGrowth":  {"raw": info.get("revenueGrowth")},
+                },
+                "defaultKeyStatistics": {
+                    "sharesOutstanding": {"raw": shares},
+                    "trailingEps":       {"raw": info.get("trailingEps")},
+                    "forwardEps":        {"raw": info.get("forwardEps")},
+                },
+                "summaryDetail": {
+                    "trailingPE": {"raw": info.get("trailingPE")},
+                    "forwardPE":  {"raw": info.get("forwardPE")},
+                },
+            }], "error": None}
+        })
 
     # ── Non-Yahoo: httpx direct ───────────────────────
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True, headers=HEADERS) as client:
             r = await client.get(url)
             try:
-                data = r.json()
+                return JSONResponse(content=r.json(), status_code=r.status_code)
             except Exception:
-                data = r.text
-            return JSONResponse(content=data, status_code=r.status_code)
+                return JSONResponse(content=r.text, status_code=r.status_code)
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="Timeout")
     except Exception as e:
@@ -179,3 +189,10 @@ async def proxy(url: str = Query(...)):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/test/{ticker}")
+async def test_ticker(ticker: str):
+    """Endpoint de debug — testeaza yfinance direct."""
+    data = _yf_ticker_data(ticker)
+    return {"ticker": ticker, "fields": list(data["info"].keys())[:20], "total_assets": data["total_assets"]}
