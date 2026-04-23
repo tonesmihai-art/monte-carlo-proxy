@@ -268,6 +268,9 @@ async def proxy(url: str = Query(...)):
 async def health():
     return {"status": "ok", "crumb": _yahoo_session["crumb"] is not None}
 
+@app.get("/ping")
+async def ping():
+    return {"status": "ok"}
 
 @app.get("/test/{ticker}")
 async def test_ticker(ticker: str):
