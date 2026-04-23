@@ -195,4 +195,17 @@ async def health():
 async def test_ticker(ticker: str):
     """Endpoint de debug — testeaza yfinance direct."""
     data = _yf_ticker_data(ticker)
-    return {"ticker": ticker, "fields": list(data["info"].keys())[:20], "total_assets": data["total_assets"]}
+    info = data["info"]
+    # Returneaza campurile relevante pentru diagnosticare
+    relevant = {k: info.get(k) for k in [
+        "trailingEps", "forwardEps", "trailingPE", "forwardPE",
+        "freeCashflow", "totalCash", "totalDebt", "sharesOutstanding",
+        "earningsGrowth", "revenueGrowth", "currency",
+        "longName", "shortName", "regularMarketPrice",
+    ]}
+    return {
+        "ticker": ticker,
+        "total_assets": data["total_assets"],
+        "relevant_fields": relevant,
+        "all_keys": list(info.keys()),
+    }
