@@ -270,7 +270,14 @@ async def health():
 
 @app.get("/ping")
 async def ping():
-    return {"status": "ok"}
+     async with httpx.AsyncClient(follow_redirects=True) as client:
+        ok = await _refresh_yahoo_session(client)
+    return {
+        "status": "ok",
+        "proxy": "online",
+        "yahoo_session": "activa" if ok else "esuat",
+        "crumb": _yahoo_session["crumb"] is not None,
+    }
 
 @app.get("/test/{ticker}")
 async def test_ticker(ticker: str):
