@@ -195,15 +195,27 @@ async def proxy(url: str = Query(...)):
                 try:
                     stmts = bs_data["quoteSummary"]["result"][0]["balanceSheetHistory"]["balanceSheetStatements"]
                     raw = stmts[0].get("totalAssets", {})
-                    total_assets = raw.get("raw") if isinstance(raw, dict) else raw
+                    total_assets = raw.get("raw") if isinstance(raw, dict) else (raw if isinstance(raw, (int, float)) else None)
                 except Exception:
                     pass
 
-                # Injecteaza totalAssets in raspuns
+                # Injecteaza totalAssets in financialData
                 try:
-                    fd = data["quoteSummary"]["result"][0].setdefault("financialData", {})
+                    result0 = data["quoteSummary"]["result"][0]
+                    fd = result0.setdefault("financialData", {})
                     if total_assets:
                         fd["totalAssets"] = {"raw": total_assets}
+
+                    # Normalizeaza toate campurile numerice sa aiba format {raw: value}
+                    # (unele versiuni Yahoo returneaza plain numbers, altele {raw,fmt})
+                    def _wrap(d):
+                        for k, v in d.items():
+                            if isinstance(v, (int, float)):
+                                d[k] = {"raw": v}
+                        return d
+                    _wrap(fd)
+                    _wrap(result0.get("defaultKeyStatistics", {}))
+                    _wrap(result0.get("summaryDetail", {}))
                 except Exception:
                     pass
 
