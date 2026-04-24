@@ -350,7 +350,7 @@ Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
   "issues": [],
   "verdict": "Valorile sunt corecte"
 }}
-Pune null pentru campurile corecte. Corecteaza DOAR valorile evident gresite."""
+Pune null pentru campurile corecte. Corecteaza DOAR valorile evident gresite sau care sunt precompletate si incepe cu ex."""
 
     try:
         client = anthropic.Anthropic(api_key=api_key)
