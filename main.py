@@ -203,6 +203,28 @@ async def proxy(url: str = Query(...)):
                 except Exception:
                     pass
 
+                
+# 🔥 EXTRA: verifica si financialData (uneori exista acolo)
+if not total_assets:
+    try:
+        fd = data["quoteSummary"]["result"][0].get("financialData", {})
+        raw = fd.get("totalAssets", {})
+        if isinstance(raw, dict):
+            total_assets = raw.get("raw")
+        elif isinstance(raw, (int, float)):
+            total_assets = raw
+    except Exception:
+        pass
+
+# 🔥 FALLBACK yfinance (ACUM pentru EU + US)
+if not total_assets:
+    loop = asyncio.get_event_loop()
+    yf_data = await loop.run_in_executor(None, _yf_ticker_data, ticker_sym)
+
+    if yf_data.get("total_assets"):
+        total_assets = yf_data["total_assets"]
+
+        
                 # Injecteaza totalAssets in financialData
                 try:
                     result0 = data["quoteSummary"]["result"][0]
