@@ -8,17 +8,21 @@ Altele: httpx direct
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import Optional
 import httpx
 import asyncio
 import re
 import traceback
+import os
+import anthropic
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -267,6 +271,82 @@ async def proxy(url: str = Query(...)):
 @app.get("/health")
 async def health():
     return {"status": "ok", "crumb": _yahoo_session["crumb"] is not None}
+
+
+# ── AI Validator — Anthropic Haiku ───────────────────
+
+class ValidateRequest(BaseModel):
+    ticker: str
+    sector: str = "tech"
+    currency: str = "USD"
+    currentPrice: float = 0
+    fields: dict = {}
+
+
+@app.post("/validate-fundamentals")
+async def validate_fundamentals(req: ValidateRequest):
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY lipsa")
+
+    sym = "$" if req.currency == "USD" else f"{req.currency} "
+    field_lines = "\n".join(
+        f"  {k}: {v}" for k, v in req.fields.items() if v is not None
+    )
+
+    prompt = f"""Esti un analist financiar. Verifica daca valorile fundamentale extrase automat pentru {req.ticker} (sector: {req.sector}, pret curent: {sym}{req.currentPrice}) sunt realiste.
+
+Valori extrase:
+{field_lines}
+
+Reguli de validare:
+- EPS: intre -50 si 500 pentru actiuni normale
+- P/E: intre 3 si 200; negativ = companie pe pierdere (acceptabil)
+- FCF/actiune: intre -100 si 500; daca e negativ si compania e profitabila → suspect
+- Crestere (%): intre -50 si 50; peste 100 e aproape sigur o eroare Yahoo
+- WACC: intre 5 si 20
+- Active/Cash/Datorii (milioane): verifica ordinul de marime pentru companie
+- LTV (REIT): intre 10 si 70
+- Ocupare (REIT): intre 50 si 100
+- Dividend: yield implicit (dividend/pret) intre 0 si 20%
+
+Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
+{{
+  "valid": true,
+  "corrections": {{
+    "eps": null,
+    "pe": null,
+    "fcf": null,
+    "growth": null,
+    "wacc": null,
+    "assets": null,
+    "cash": null,
+    "debt": null,
+    "ltv": null,
+    "dividend": null
+  }},
+  "issues": [],
+  "verdict": "Valorile sunt corecte"
+}}
+Pune null pentru campurile corecte. Corecteaza DOAR valorile evident gresite."""
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        message = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=600,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw  = message.content[0].text.strip()
+        import json
+        # curata eventuale backtick-uri
+        raw  = raw.replace("```json", "").replace("```", "").strip()
+        data = json.loads(raw)
+        return JSONResponse(content=data)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"JSON parse error: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/ping")
 async def ping():
