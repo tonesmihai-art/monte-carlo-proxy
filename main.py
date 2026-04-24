@@ -203,28 +203,26 @@ async def proxy(url: str = Query(...)):
                 except Exception:
                     pass
 
-                
-# 🔥 EXTRA: verifica si financialData (uneori exista acolo)
-if not total_assets:
-    try:
-        fd = data["quoteSummary"]["result"][0].get("financialData", {})
-        raw = fd.get("totalAssets", {})
-        if isinstance(raw, dict):
-            total_assets = raw.get("raw")
-        elif isinstance(raw, (int, float)):
-            total_assets = raw
-    except Exception:
-        pass
 
-# 🔥 FALLBACK yfinance (ACUM pentru EU + US)
-if not total_assets:
-    loop = asyncio.get_event_loop()
-    yf_data = await loop.run_in_executor(None, _yf_ticker_data, ticker_sym)
+                # 🔥 EXTRA: verifica si financialData (uneori exista acolo)
+                if not total_assets:
+                    try:
+                        fd = data["quoteSummary"]["result"][0].get("financialData", {})
+                        raw = fd.get("totalAssets", {})
+                        if isinstance(raw, dict):
+                            total_assets = raw.get("raw")
+                        elif isinstance(raw, (int, float)):
+                            total_assets = raw
+                    except Exception:
+                        pass
 
-    if yf_data.get("total_assets"):
-        total_assets = yf_data["total_assets"]
+                # 🔥 FALLBACK yfinance (ACUM pentru EU + US)
+                if not total_assets:
+                    loop = asyncio.get_event_loop()
+                    yf_data = await loop.run_in_executor(None, _yf_ticker_data, ticker_sym)
+                    if yf_data.get("total_assets"):
+                        total_assets = yf_data["total_assets"]
 
-        
                 # Injecteaza totalAssets in financialData
                 try:
                     result0 = data["quoteSummary"]["result"][0]
@@ -303,6 +301,7 @@ class ValidateRequest(BaseModel):
     currency: str = "USD"
     currentPrice: float = 0
     fields: dict = {}
+    estimatedFields: list = []
 
 
 @app.post("/validate-fundamentals")
@@ -312,14 +311,24 @@ async def validate_fundamentals(req: ValidateRequest):
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY lipsa")
 
     sym = "$" if req.currency == "USD" else f"{req.currency} "
+
+    # Campuri cu valori
     field_lines = "\n".join(
         f"  {k}: {v}" for k, v in req.fields.items() if v is not None
     )
+    # Campuri lipsa — AI sa furnizeze valori reale
+    missing_fields = [k for k, v in req.fields.items() if v is None]
+    if req.estimatedFields:
+        missing_fields = list(set(missing_fields + req.estimatedFields))
+    missing_lines = (
+        "\nCampuri LIPSA (furnizeaza valori reale din cunostintele tale despre " + req.ticker + "):\n" +
+        "\n".join(f"  {k}: LIPSA" for k in missing_fields)
+    ) if missing_fields else ""
 
-    prompt = f"""Esti un analist financiar. Verifica daca valorile fundamentale extrase automat pentru {req.ticker} (sector: {req.sector}, pret curent: {sym}{req.currentPrice}) sunt realiste.
+    prompt = f"""Esti un analist financiar. Verifica valorile fundamentale pentru {req.ticker} (sector: {req.sector}, pret curent: {sym}{req.currentPrice}).
 
-Valori extrase:
-{field_lines}
+Valori extrase automat:
+{field_lines}{missing_lines}
 
 Reguli de validare:
 - EPS: intre -50 si 500 pentru actiuni normale
@@ -331,6 +340,9 @@ Reguli de validare:
 - LTV (REIT): intre 10 si 70
 - Ocupare (REIT): intre 50 si 100
 - Dividend: yield implicit (dividend/pret) intre 0 si 20%
+
+IMPORTANT: Pentru campurile marcate LIPSA furnizeaza valoarea reala in milioane bazata pe cunostintele tale despre aceasta companie. Pune null doar daca nu stii valoarea.
+Pune null pentru campurile corecte. Corecteaza valorile evident gresite.
 
 Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
 {{
@@ -349,8 +361,7 @@ Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
   }},
   "issues": [],
   "verdict": "Valorile sunt corecte"
-}}
-Pune null pentru campurile corecte. Corecteaza DOAR valorile evident gresite sau care sunt precompletate si incepe cu ex."""
+}}"""
 
     try:
         client = anthropic.Anthropic(api_key=api_key)
