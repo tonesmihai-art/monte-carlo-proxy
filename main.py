@@ -350,7 +350,7 @@ Pune null pentru campurile corecte. Corecteaza DOAR valorile evident gresite."""
 
 @app.get("/ping")
 async def ping():
-     async with httpx.AsyncClient(follow_redirects=True) as client:
+    async with httpx.AsyncClient(follow_redirects=True) as client:
         ok = await _refresh_yahoo_session(client)
     return {
         "status": "ok",
