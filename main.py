@@ -97,7 +97,11 @@ def _is_yahoo(url: str) -> bool:
 
 
 def _extract_ticker(url: str) -> str:
-    m = re.search(r'/finance/(?:chart|options|quote(?:Summary)?)/([^/?&]+)', url)
+    m = re.search(r'/finance/(?:chart|options|quote(?:Summary)?|timeseries)/([^/?&]+)', url)
+    if m:
+        return m.group(1)
+    # fundamentals-timeseries: /ws/fundamentals-timeseries/v1/finance/timeseries/COV.PA
+    m = re.search(r'/timeseries/([^/?&]+)', url)
     if m:
         return m.group(1)
     m = re.search(r'[?&]symbols?=([^&]+)', url)
@@ -147,6 +151,13 @@ async def proxy(url: str = Query(...)):
                 raise HTTPException(status_code=400, detail="Ticker negasit in URL")
 
             is_eu = "." in ticker_sym   # TTE.PA, NESN.SW etc.
+
+            # ── Fundamentals Timeseries endpoint ──────────
+            if "fundamentals-timeseries" in url:
+                data = await _yahoo_get(client, url)
+                if data and data.get("timeseries"):
+                    return JSONResponse(content=data)
+                raise HTTPException(status_code=502, detail="Timeseries indisponibil")
 
             # ── Chart endpoint ────────────────────────────
             if "/chart/" in url:
