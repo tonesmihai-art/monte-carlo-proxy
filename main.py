@@ -341,33 +341,21 @@ Reguli de validare:
 - Ocupare (REIT): intre 50 si 100
 - Dividend: yield implicit (dividend/pret) intre 0 si 20%
 
-IMPORTANT: Pentru campurile marcate LIPSA furnizeaza valoarea reala in milioane bazata pe cunostintele tale despre aceasta companie. Pune null doar daca nu stii valoarea.
-Pune null pentru campurile corecte. Corecteaza valorile evident gresite.
+IMPORTANT: Pentru campurile marcate LIPSA furnizeaza valoarea reala in milioane bazata pe cunostintele tale despre aceasta companie.
 
 Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
 {{
-  "valid": true,
-  "corrections": {{
-    "eps": null,
-    "pe": null,
-    "fcf": null,
-    "growth": null,
-    "wacc": null,
-    "assets": null,
-    "cash": null,
-    "debt": null,
-    "ltv": null,
-    "dividend": null
-  }},
-  "issues": [],
-  "verdict": "Valorile sunt corecte"
+  "valid": true|false,
+  "corrections": {{<doar campurile gresite sau LIPSA, cu valoarea corecta; omite campurile corecte>}},
+  "issues": [<string, doar daca exista probleme reale>],
+  "verdict": "<max 15 cuvinte>"
 }}"""
 
     try:
         client = anthropic.Anthropic(api_key=api_key)
         message = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=600,
+            max_tokens=300,
             messages=[{"role": "user", "content": prompt}],
         )
         raw  = message.content[0].text.strip()
