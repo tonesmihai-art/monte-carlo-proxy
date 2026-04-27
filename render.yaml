@@ -7,3 +7,5 @@ services:
     envVars:
       - key: ALLOWED_ORIGINS
         value: https://tonesmihai-art.github.io
+      - key: FINNHUB_KEY
+        sync: false   # valoarea se seteaza manual in Render dashboard (nu se comite in repo)
