@@ -437,6 +437,84 @@ async def health():
     return {"status": "ok", "crumb": _yahoo_session["crumb"] is not None}
 
 
+# ── Helper: fetch date REIT din surse financiare ──────
+
+EXCHANGE_MAP = {
+    ".AS": "AMS", ".DE": "XETRA", ".L": "LSE", ".PA": "EPA",
+    ".MI": "BIT", ".SW": "SWX", ".BR": "EBR", ".LS": "ELI",
+    ".MC": "BME", ".HE": "HEL", ".ST": "STO", ".CO": "CPH",
+    ".OL": "OSL", ".VI": "VIE",
+}
+
+def _to_finnhub_ticker(ticker: str) -> str:
+    for suffix, exchange in EXCHANGE_MAP.items():
+        if ticker.endswith(suffix):
+            return f"{exchange}:{ticker[:-len(suffix)]}"
+    return ticker
+
+async def _fetch_reit_live_data(ticker: str) -> dict:
+    """
+    Cauta date operationale REIT (occupancy, LTV) din:
+    1. Finnhub basicFinancials (metric)
+    2. Yahoo Finance quoteSummary financialData
+    Returneaza dict cu valorile gasite (poate fi gol daca nu gaseste nimic).
+    """
+    found = {}
+    finnhub_key = os.environ.get("FINNHUB_KEY")
+    fh_ticker   = _to_finnhub_ticker(ticker)
+
+    async with httpx.AsyncClient(follow_redirects=True, timeout=8.0) as client:
+        # ── 1. Finnhub metric ──────────────────────────────
+        if finnhub_key:
+            try:
+                r = await client.get(
+                    f"https://finnhub.io/api/v1/stock/metric?symbol={fh_ticker}&metric=all&token={finnhub_key}"
+                )
+                if r.status_code == 200:
+                    m = r.json().get("metric", {})
+                    # Câmpuri posibile pentru occupancy în Finnhub
+                    for key in ["occupancyRate", "occupancy", "netOccupancy",
+                                "physicalOccupancy", "economicOccupancy"]:
+                        val = m.get(key)
+                        if val is not None and isinstance(val, (int, float)) and 50 <= val <= 100:
+                            found["occupancy"] = round(float(val), 1)
+                            break
+                    # LTV / debt-to-assets
+                    if "occupancy" not in found:
+                        ltv = m.get("longtermDebtTotalAssetRatio") or m.get("debtToTotalAssetRatio")
+                        if ltv is not None and isinstance(ltv, (int, float)) and 0.05 < ltv < 1:
+                            found["ltv_finnhub"] = round(float(ltv) * 100, 1)
+            except Exception as e:
+                print(f"[REIT fetch] Finnhub eroare: {e}")
+
+        # ── 2. Yahoo Finance financialData (fallback) ──────
+        if "occupancy" not in found:
+            try:
+                yahoo_url = (
+                    f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}"
+                    f"?modules=financialData,defaultKeyStatistics"
+                )
+                if _yahoo_session["crumb"]:
+                    yahoo_url += f"&crumb={_yahoo_session['crumb']}"
+                r = await client.get(yahoo_url, headers=HEADERS,
+                                     cookies=_yahoo_session.get("cookies", {}))
+                if r.status_code == 200:
+                    fd = (r.json()
+                          .get("quoteSummary", {})
+                          .get("result", [{}])[0]
+                          .get("financialData", {}))
+                    # Yahoo uneori include occupancyRate pentru REIT-uri US
+                    occ = fd.get("occupancyRate", {})
+                    if isinstance(occ, dict):
+                        occ = occ.get("raw")
+                    if occ is not None and isinstance(occ, (int, float)) and 50 <= occ <= 100:
+                        found["occupancy"] = round(float(occ), 1)
+            except Exception as e:
+                print(f"[REIT fetch] Yahoo eroare: {e}")
+
+    return found
+
+
 # ── AI Validator — Anthropic Haiku ───────────────────
 
 class ValidateRequest(BaseModel):
@@ -478,12 +556,40 @@ async def validate_fundamentals(req: ValidateRequest):
     else:
         fcf_rule = "- FCF/actiune: intre -10 si 20 pentru companii obisnuite; valori sub 0.05 sau peste 30 sunt aproape sigur erori Yahoo"
 
+    is_reit = "reit" in req.sector.lower() or "imobiliar" in req.sector.lower()
+
+    # ── Fetch live date REIT (occupancy, LTV) din Finnhub/Yahoo ──
+    live_reit = {}
+    if is_reit and req.fields.get("occupancy") is None:
+        try:
+            live_reit = await _fetch_reit_live_data(req.ticker)
+        except Exception as e:
+            print(f"[REIT live fetch] eroare: {e}")
+
+    # Injecteaza valorile gasite ca date verificate (nu LIPSA)
+    verified_lines = ""
+    if live_reit.get("occupancy") is not None:
+        occ_val = live_reit["occupancy"]
+        verified_lines += f"\n  occupancy (verificat din surse financiare): {occ_val}%"
+        missing_fields  = [f for f in missing_fields if f != "occupancy"]
+        field_lines    += verified_lines
+        print(f"[REIT live] {req.ticker}: occupancy={occ_val}%")
+
+    reit_note = (
+        f"\nReguli speciale REIT: "
+        + (f"Rata de ocupare verificata din surse financiare este deja inclusa in date. "
+           if live_reit.get("occupancy") else
+           f"Daca 'occupancy' lipseste, sugereaza rata de ocupare reala a companiei {req.ticker} daca o cunosti, "
+           f"sau o valoare tipica de sector (85-95%) daca nu cunosti valoarea exacta — e preferabil o estimare decat lipsa. ")
+        + f"LTV si dividendul sunt indicatorii principali pentru REIT, nu FCF-ul."
+    ) if is_reit else ""
+
     system_prompt = (
         f"Esti un analist financiar strict. "
         f"Analizezi EXCLUSIV compania cu ticker-ul {req.ticker}. "
         f"NU confunda aceasta companie cu alte companii cu nume similare, din acelasi sector sau din aceeasi tara. "
-        f"Daca nu cunosti cu certitudine datele reale ale acestei companii specifice, "
-        f"NU sugera valori inventate — omite campul din corrections."
+        f"Pentru valori financiare precise (EPS, FCF, active, datorii): sugereaza NUMAI daca esti sigur. "
+        f"Pentru metrici structurale standard (rata ocupare REIT, LTV): poti estima din cunostinte de sector daca valoarea specifica lipseste."
     )
 
     prompt = f"""Verifica valorile fundamentale pentru {req.ticker} (sector: {req.sector}, pret curent: {sym}{req.currentPrice}).
@@ -500,9 +606,9 @@ Reguli de validare:
 - Active/Cash/Datorii (milioane): verifica ordinul de marime pentru companie
 - LTV (REIT): intre 10 si 70
 - Ocupare (REIT): intre 50 si 100
-- Dividend: yield implicit (dividend/pret) intre 0 si 20%
+- Dividend: yield implicit (dividend/pret) intre 0 si 20%{reit_note}
 
-IMPORTANT: Pentru campurile marcate LIPSA furnizeaza valoarea reala NUMAI daca esti absolut sigur ca o cunosti pentru {req.ticker} specific. Daca exista orice dubiu, omite campul.
+IMPORTANT: Pentru valori financiare precise (EPS, FCF, active) furnizeaza NUMAI daca esti sigur pentru {req.ticker}. Pentru metrici structurale (ocupare, LTV) poti estima din sector daca valoarea lipseste.
 
 Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
 {{
