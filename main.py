@@ -469,7 +469,24 @@ async def validate_fundamentals(req: ValidateRequest):
         "\n".join(f"  {k}: LIPSA" for k in missing_fields)
     ) if missing_fields else ""
 
-    prompt = f"""Esti un analist financiar. Verifica valorile fundamentale pentru {req.ticker} (sector: {req.sector}, pret curent: {sym}{req.currentPrice}).
+    # Limita FCF relativa la EPS — previne sugestii aberante
+    eps_val = req.fields.get("eps")
+    if eps_val and eps_val > 0:
+        fcf_max = round(eps_val * 3, 2)
+        fcf_min = round(eps_val * -2, 2)
+        fcf_rule = f"- FCF/actiune: pentru aceasta companie (EPS={eps_val}), intervalul realist este [{fcf_min}, {fcf_max}]; orice valoare in afara acestui interval este o eroare de date, NU o sugera"
+    else:
+        fcf_rule = "- FCF/actiune: intre -10 si 20 pentru companii obisnuite; valori sub 0.05 sau peste 30 sunt aproape sigur erori Yahoo"
+
+    system_prompt = (
+        f"Esti un analist financiar strict. "
+        f"Analizezi EXCLUSIV compania cu ticker-ul {req.ticker}. "
+        f"NU confunda aceasta companie cu alte companii cu nume similare, din acelasi sector sau din aceeasi tara. "
+        f"Daca nu cunosti cu certitudine datele reale ale acestei companii specifice, "
+        f"NU sugera valori inventate — omite campul din corrections."
+    )
+
+    prompt = f"""Verifica valorile fundamentale pentru {req.ticker} (sector: {req.sector}, pret curent: {sym}{req.currentPrice}).
 
 Valori extrase automat:
 {field_lines}{missing_lines}
@@ -477,7 +494,7 @@ Valori extrase automat:
 Reguli de validare:
 - EPS: intre -50 si 500 pentru actiuni normale
 - P/E: intre 3 si 200; negativ = companie pe pierdere (acceptabil)
-- FCF/actiune: intre -100 si 500; daca e negativ si compania e profitabila → suspect
+{fcf_rule}
 - Crestere (%): intre -50 si 50; peste 100 e aproape sigur o eroare Yahoo
 - WACC: intre 5 si 20
 - Active/Cash/Datorii (milioane): verifica ordinul de marime pentru companie
@@ -485,12 +502,12 @@ Reguli de validare:
 - Ocupare (REIT): intre 50 si 100
 - Dividend: yield implicit (dividend/pret) intre 0 si 20%
 
-IMPORTANT: Pentru campurile marcate LIPSA furnizeaza valoarea reala in milioane bazata pe cunostintele tale despre aceasta companie.
+IMPORTANT: Pentru campurile marcate LIPSA furnizeaza valoarea reala NUMAI daca esti absolut sigur ca o cunosti pentru {req.ticker} specific. Daca exista orice dubiu, omite campul.
 
 Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
 {{
   "valid": true|false,
-  "corrections": {{<doar campurile gresite sau LIPSA, cu valoarea corecta; omite campurile corecte>}},
+  "corrections": {{<doar campurile gresite sau LIPSA cu valoarea corecta; omite campurile corecte si pe cele nesigure>}},
   "issues": [<string, doar daca exista probleme reale>],
   "verdict": "<max 15 cuvinte>"
 }}"""
@@ -500,6 +517,7 @@ Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
         message = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=300,
+            system=system_prompt,
             messages=[{"role": "user", "content": prompt}],
         )
         raw  = message.content[0].text.strip()
@@ -841,12 +859,3 @@ async def ping():
         "yahoo_session": "activa" if ok else "esuat",
         "crumb": _yahoo_session["crumb"] is not None,
     }
-
-@app.get("/test/{ticker}")
-async def test_ticker(ticker: str):
-    async with httpx.AsyncClient(follow_redirects=True) as client:
-        await _refresh_yahoo_session(client)
-        modules = "financialData,defaultKeyStatistics,summaryDetail"
-        url  = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}?modules={modules}&formatted=false"
-        data = await _yahoo_get(client, url)
-        return {"ticker": ticker, "crumb": _yahoo_session["crumb"], "result": data}
