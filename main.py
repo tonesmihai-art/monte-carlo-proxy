@@ -16,6 +16,12 @@ import re
 import traceback
 import os
 import anthropic
+try:
+    from google import genai as google_genai
+    from google.genai import types as genai_types
+    _GEMINI_OK = True
+except ImportError:
+    _GEMINI_OK = False
 import numpy as np
 from scipy.optimize import minimize, brentq
 from scipy.stats import norm
@@ -641,8 +647,8 @@ Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
 
     try:
         if req.provider == "gemini":
-            from google import genai as google_genai
-            from google.genai import types as genai_types
+            if not _GEMINI_OK:
+                raise HTTPException(status_code=500, detail="google-genai package nu e instalat pe server")
             client_g = google_genai.Client(api_key=api_key)
             resp = client_g.models.generate_content(
                 model="gemini-2.5-flash",
