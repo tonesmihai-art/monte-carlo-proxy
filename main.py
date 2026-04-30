@@ -650,16 +650,35 @@ Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
             if not _GEMINI_OK:
                 raise HTTPException(status_code=500, detail="google-genai package nu e instalat pe server")
             client_g = google_genai.Client(api_key=api_key)
-            resp = client_g.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    max_output_tokens=400,
-                    temperature=0.1,
-                ),
-            )
-            raw = resp.text.strip()
+            gemini_models = ["gemini-2.5-flash", "gemini-2.0-flash"]
+            raw = None
+            last_err = None
+            for gm in gemini_models:
+                try:
+                    resp = client_g.models.generate_content(
+                        model=gm,
+                        contents=prompt,
+                        config=genai_types.GenerateContentConfig(
+                            system_instruction=system_prompt,
+                            max_output_tokens=400,
+                            temperature=0.1,
+                        ),
+                    )
+                    # resp.text poate arunca daca raspunsul e blocat
+                    try:
+                        raw = resp.text.strip()
+                    except Exception:
+                        parts = (resp.candidates or [{}])[0].get("content", {}).get("parts", [])
+                        raw = parts[0].get("text", "").strip() if parts else None
+                    if raw:
+                        print(f"[Gemini] model={gm} OK, {len(raw)} chars")
+                        break
+                except Exception as e:
+                    last_err = e
+                    print(f"[Gemini] model={gm} eroare: {e}")
+                    continue
+            if not raw:
+                raise Exception(f"Gemini indisponibil (toate modelele au esuat): {last_err}")
         else:
             client = anthropic.Anthropic(api_key=api_key)
             message = client.messages.create(
@@ -676,7 +695,10 @@ Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
         return JSONResponse(content=data)
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=500, detail=f"JSON parse error ({req.provider}): {e}")
+    except HTTPException:
+        raise
     except Exception as e:
+        print(f"[validate-fundamentals/{req.provider}] EROARE: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/iv/{ticker}")
