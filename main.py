@@ -443,6 +443,19 @@ async def get_sector(ticker: str):
 async def health():
     return {"status": "ok", "crumb": _yahoo_session["crumb"] is not None}
 
+@app.get("/gemini-models")
+async def list_gemini_models():
+    """Debug: listeaza modelele Gemini disponibile pentru acest API key."""
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if not api_key or not _GEMINI_OK:
+        raise HTTPException(status_code=503, detail="Gemini indisponibil")
+    try:
+        client_g = google_genai.Client(api_key=api_key)
+        models = [m.name for m in client_g.models.list()]
+        return {"models": models}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # ── Helper: fetch date REIT din surse financiare ──────
 
