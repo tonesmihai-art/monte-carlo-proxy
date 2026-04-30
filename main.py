@@ -802,7 +802,13 @@ async def get_finnhub(ticker: str):
     eps          = _n(m.get("epsTTM"))          or _n(m.get("epsAnnual"))
     pe           = _n(m.get("peTTM"))           or _n(m.get("peAnnual"))
     fcf_per_share= _n(m.get("freeCashFlowPerShareTTM")) or _n(m.get("freeCashFlowPerShareAnnual"))
-    growth       = _n(m.get("epsGrowth3Y"))     or _n(m.get("revenueGrowth3Y")) or _n(m.get("revenueGrowthQuarterly"))
+    growth       = next((v for v in [
+                       _n(m.get("epsGrowth3Y")),
+                       _n(m.get("epsGrowthTTMYoy")),
+                       _n(m.get("revenueGrowth3Y")),
+                       _n(m.get("revenueGrowthTTMYoy")),
+                       _n(m.get("revenueGrowthQuarterlyYoy")),
+                   ] if v is not None), None)
     shares       = _n(p.get("shareOutstanding"))
     total_assets = _n(m.get("totalAssets"))
     cash         = _n(m.get("cashAndEquivalents"))
