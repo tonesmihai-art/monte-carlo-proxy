@@ -358,33 +358,34 @@ async def proxy(url: str = Query(...)):
 
                 return JSONResponse(content=data)
 
-            # Fallback yfinance pentru US
-            if not is_eu:
-                loop    = asyncio.get_event_loop()
-                yf_data = await loop.run_in_executor(None, _yf_ticker_data, ticker_sym)
-                info    = yf_data["info"]
-                ta      = yf_data["total_assets"]
-                if info:
-                    shares = info.get("sharesOutstanding")
-                    fcf    = info.get("freeCashflow")
-                    return JSONResponse({"quoteSummary": {"result": [{
-                        "financialData": {
-                            "totalCash":    {"raw": info.get("totalCash")},
-                            "totalDebt":    {"raw": info.get("totalDebt")},
-                            "freeCashflow": {"raw": fcf},
-                            "totalAssets":  {"raw": ta},
-                            "earningsGrowth": {"raw": info.get("earningsGrowth")},
-                            "revenueGrowth":  {"raw": info.get("revenueGrowth")},
-                        },
-                        "defaultKeyStatistics": {
-                            "sharesOutstanding": {"raw": shares},
-                            "trailingEps":       {"raw": info.get("trailingEps")},
-                        },
-                        "summaryDetail": {
-                            "trailingPE": {"raw": info.get("trailingPE")},
-                            "forwardPE":  {"raw": info.get("forwardPE")},
-                        },
-                    }], "error": None}})
+            # Fallback yfinance — EU + US (yfinance merge server-side fara CORS)
+            loop    = asyncio.get_event_loop()
+            yf_data = await loop.run_in_executor(None, _yf_ticker_data, ticker_sym)
+            info    = yf_data["info"]
+            ta      = yf_data["total_assets"]
+            if info:
+                shares = info.get("sharesOutstanding")
+                fcf    = info.get("freeCashflow")
+                return JSONResponse({"quoteSummary": {"result": [{
+                    "financialData": {
+                        "totalCash":    {"raw": info.get("totalCash")},
+                        "totalDebt":    {"raw": info.get("totalDebt")},
+                        "freeCashflow": {"raw": fcf},
+                        "totalAssets":  {"raw": ta},
+                        "earningsGrowth": {"raw": info.get("earningsGrowth")},
+                        "revenueGrowth":  {"raw": info.get("revenueGrowth")},
+                    },
+                    "defaultKeyStatistics": {
+                        "sharesOutstanding": {"raw": shares},
+                        "trailingEps":       {"raw": info.get("trailingEps")},
+                    },
+                    "summaryDetail": {
+                        "trailingPE":   {"raw": info.get("trailingPE")},
+                        "forwardPE":    {"raw": info.get("forwardPE")},
+                        "dividendRate": {"raw": info.get("dividendRate")},
+                        "dividendYield":{"raw": info.get("dividendYield")},
+                    },
+                }], "error": None}}})
 
             raise HTTPException(status_code=502, detail="Date fundamentale indisponibile")
 
