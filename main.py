@@ -666,6 +666,8 @@ Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
         raw = re.sub(r'\bNone\b', 'null', raw)
         # trailing commas inainte de } sau ] (JSON invalid, Gemini le genereaza)
         raw = re.sub(r',\s*([}\]])', r'\1', raw)
+        # virgule lipsa intre proprietati: }  "key" sau ]  "key" → }, "key"
+        raw = re.sub(r'([}\]"])\s*\n(\s*")', r'\1,\n\2', raw)
         return raw
 
     try:
