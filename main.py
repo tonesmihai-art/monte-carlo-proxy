@@ -674,17 +674,18 @@ Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
         if req.provider == "gemini":
             if not _GEMINI_OK:
                 raise HTTPException(status_code=500, detail="google-genai package nu e instalat pe server")
-            client_g = google_genai.Client(api_key=api_key)
-            gemini_models = ["gemini-2.5-flash", "gemini-2.0-flash-lite"]
+            client_g = google_genai.Client(api_key=api_key, http_options={"api_version": "v1"})
+            gemini_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+            # system_instruction combinat in prompt (v1 nu suporta campul separat)
+            full_prompt = f"{system_prompt}\n\n{prompt}"
             raw = None
             last_err = None
             for gm in gemini_models:
                 try:
                     resp = client_g.models.generate_content(
                         model=gm,
-                        contents=prompt,
+                        contents=full_prompt,
                         config=genai_types.GenerateContentConfig(
-                            system_instruction=system_prompt,
                             max_output_tokens=800,
                             temperature=0.1,
                         ),
