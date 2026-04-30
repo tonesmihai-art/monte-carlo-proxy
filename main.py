@@ -385,7 +385,7 @@ async def proxy(url: str = Query(...)):
                         "dividendRate": {"raw": info.get("dividendRate")},
                         "dividendYield":{"raw": info.get("dividendYield")},
                     },
-                }], "error": None}}})
+                }], "error": None}})
 
             raise HTTPException(status_code=502, detail="Date fundamentale indisponibile")
 
