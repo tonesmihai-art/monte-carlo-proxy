@@ -661,7 +661,7 @@ Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
                         contents=prompt,
                         config=genai_types.GenerateContentConfig(
                             system_instruction=system_prompt,
-                            max_output_tokens=400,
+                            max_output_tokens=800,
                             temperature=0.1,
                         ),
                     )
