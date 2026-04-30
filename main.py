@@ -641,15 +641,14 @@ Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
 
     try:
         if req.provider == "gemini":
-            from google import genai
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel(
-                "gemini-2.5-flash-lite-preview-06-17",
-                system_instruction=system_prompt,
-            )
-            resp = model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
+            from google import genai as google_genai
+            from google.genai import types as genai_types
+            client_g = google_genai.Client(api_key=api_key)
+            resp = client_g.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=system_prompt,
                     max_output_tokens=400,
                     temperature=0.1,
                 ),
