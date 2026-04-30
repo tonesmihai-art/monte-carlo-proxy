@@ -639,12 +639,21 @@ Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
         # extrage primul bloc JSON daca exista backtick-uri
         m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
         if m:
-            return m.group(1).strip()
-        # altfel curata backtick-urile simple
-        raw = raw.replace("```json", "").replace("```", "").strip()
-        # fallback: extrage primul { ... } din raspuns
-        m = re.search(r"(\{.*\})", raw, re.DOTALL)
-        return m.group(1).strip() if m else raw
+            raw = m.group(1).strip()
+        else:
+            # curata backtick-urile simple
+            raw = raw.replace("```json", "").replace("```", "").strip()
+            # fallback: extrage primul { ... } din raspuns
+            m = re.search(r"(\{.*\})", raw, re.DOTALL)
+            if m:
+                raw = m.group(1).strip()
+        # Python booleans/None → JSON
+        raw = re.sub(r'\bTrue\b', 'true', raw)
+        raw = re.sub(r'\bFalse\b', 'false', raw)
+        raw = re.sub(r'\bNone\b', 'null', raw)
+        # trailing commas inainte de } sau ] (JSON invalid, Gemini le genereaza)
+        raw = re.sub(r',\s*([}\]])', r'\1', raw)
+        return raw
 
     try:
         if req.provider == "gemini":
