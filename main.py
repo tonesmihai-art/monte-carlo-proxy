@@ -641,7 +641,7 @@ Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
 
     try:
         if req.provider == "gemini":
-            import google.generativeai as genai
+            from google import genai
             genai.configure(api_key=api_key)
             model = genai.GenerativeModel(
                 "gemini-2.5-flash-lite-preview-06-17",
