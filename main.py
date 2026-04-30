@@ -450,7 +450,7 @@ async def list_gemini_models():
     if not api_key or not _GEMINI_OK:
         raise HTTPException(status_code=503, detail="Gemini indisponibil")
     try:
-        client_g = google_genai.Client(api_key=api_key)
+        client_g = google_genai.Client(api_key=api_key, http_options={"api_version": "v1"})
         models = [m.name for m in client_g.models.list()]
         return {"models": models}
     except Exception as e:
@@ -672,8 +672,8 @@ Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
         if req.provider == "gemini":
             if not _GEMINI_OK:
                 raise HTTPException(status_code=500, detail="google-genai package nu e instalat pe server")
-            client_g = google_genai.Client(api_key=api_key)
-            gemini_models = ["gemini-2.5-flash-preview-04-17", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
+            client_g = google_genai.Client(api_key=api_key, http_options={"api_version": "v1"})
+            gemini_models = ["gemini-2.5-flash", "gemini-2.0-flash-lite"]
             raw = None
             last_err = None
             for gm in gemini_models:
