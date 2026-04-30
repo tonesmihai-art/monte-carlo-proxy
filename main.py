@@ -515,7 +515,7 @@ async def _fetch_reit_live_data(ticker: str) -> dict:
     return found
 
 
-# ── AI Validator — Anthropic Haiku ───────────────────
+# ── AI Validator — Claude Haiku + Gemini 2.5 Flash-Lite ──
 
 class ValidateRequest(BaseModel):
     ticker: str
@@ -524,13 +524,19 @@ class ValidateRequest(BaseModel):
     currentPrice: float = 0
     fields: dict = {}
     estimatedFields: list = []
+    provider: str = "claude"   # "claude" | "gemini"
 
 
 @app.post("/validate-fundamentals")
 async def validate_fundamentals(req: ValidateRequest):
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY lipsa")
+    if req.provider == "gemini":
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            raise HTTPException(status_code=500, detail="GEMINI_API_KEY lipsa pe server")
+    else:
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY lipsa")
 
     sym = "$" if req.currency == "USD" else f"{req.currency} "
 
@@ -618,22 +624,53 @@ Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
   "verdict": "<max 15 cuvinte>"
 }}"""
 
+    import json, re
+
+    def _clean_json(raw: str) -> str:
+        """Curata markdown/text din jurul JSON — Gemini poate adauga text extra."""
+        raw = raw.strip()
+        # extrage primul bloc JSON daca exista backtick-uri
+        m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
+        if m:
+            return m.group(1).strip()
+        # altfel curata backtick-urile simple
+        raw = raw.replace("```json", "").replace("```", "").strip()
+        # fallback: extrage primul { ... } din raspuns
+        m = re.search(r"(\{.*\})", raw, re.DOTALL)
+        return m.group(1).strip() if m else raw
+
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        message = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=300,
-            system=system_prompt,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw  = message.content[0].text.strip()
-        import json
-        # curata eventuale backtick-uri
-        raw  = raw.replace("```json", "").replace("```", "").strip()
-        data = json.loads(raw)
+        if req.provider == "gemini":
+            import google.generativeai as genai
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel(
+                "gemini-2.5-flash-lite-preview-06-17",
+                system_instruction=system_prompt,
+            )
+            resp = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    max_output_tokens=400,
+                    temperature=0.1,
+                ),
+            )
+            raw = resp.text.strip()
+        else:
+            client = anthropic.Anthropic(api_key=api_key)
+            message = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=300,
+                system=system_prompt,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = message.content[0].text.strip()
+
+        data = json.loads(_clean_json(raw))
+        # adauga provider in raspuns — frontend il foloseste pentru label
+        data["_provider"] = req.provider
         return JSONResponse(content=data)
     except json.JSONDecodeError as e:
-        raise HTTPException(status_code=500, detail=f"JSON parse error: {e}")
+        raise HTTPException(status_code=500, detail=f"JSON parse error ({req.provider}): {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -888,7 +925,7 @@ async def heston_calibrate(ticker: str, price: float = Query(0)):
                     if not (0.72 < mon < 1.28):
                         continue
                     dist  = abs(mon - 1.0)
-                    w_mon = float(np.exp(-dist * 6))   # ATM = 1, scade rapid
+                    w_mon = float(np.exp(-dist * 6))
                     w_liq = min(1.0, (vol + oi) / 500) if (vol + oi) > 0 else 0.3
                     rows.append({"K": K, "T": T, "iv": iv, "w": w_mon * w_liq + 0.05})
             return rows
