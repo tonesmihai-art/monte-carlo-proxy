@@ -385,24 +385,23 @@ Paragraful 4: Recomanda o singura actiune pentru intrare acum. Explica de ce. Nu
     client_g = google_genai.Client(api_key=api_key, http_options={"api_version": "v1"})
 
     last_err = None
-    # gemini-2.5-flash cu thinking_budget limitat: reasoning real, incape in 30s Render
-    # fallback: gemini-2.0-flash rapid daca 2.5 esueaza
+    # Construieste config cu ThinkingConfig daca e disponibil (google-genai >= 1.7)
+    try:
+        _thinking_cfg = genai_types.GenerateContentConfig(
+            max_output_tokens=900,
+            temperature=1.0,
+            thinking_config=genai_types.ThinkingConfig(thinking_budget=2048),
+        )
+    except Exception:
+        _thinking_cfg = genai_types.GenerateContentConfig(
+            max_output_tokens=900,
+            temperature=0.5,
+        )
+
     model_configs = [
-        {
-            "model": "gemini-2.5-flash",
-            "config": genai_types.GenerateContentConfig(
-                max_output_tokens=900,
-                temperature=1.0,  # obligatoriu pentru thinking
-                thinking_config=genai_types.ThinkingConfig(thinking_budget=2048),
-            ),
-        },
-        {
-            "model": "gemini-2.0-flash",
-            "config": genai_types.GenerateContentConfig(
-                max_output_tokens=900,
-                temperature=0.5,
-            ),
-        },
+        {"model": "gemini-2.5-flash",  "config": _thinking_cfg},
+        {"model": "gemini-2.0-flash",  "config": genai_types.GenerateContentConfig(
+            max_output_tokens=900, temperature=0.5)},
     ]
 
     full_prompt_text = system_prompt + "\n\n" + user_prompt
