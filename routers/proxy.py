@@ -159,17 +159,19 @@ async def proxy(url: str = Query(...)):
             yf_data = await loop.run_in_executor(None, _yf_ticker_data, ticker_sym)
             info    = yf_data["info"]
             ta      = yf_data["total_assets"]
+            tl      = yf_data.get("total_liabilities")
             if info:
                 shares = info.get("sharesOutstanding")
                 fcf    = info.get("freeCashflow")
                 return JSONResponse({"quoteSummary": {"result": [{
                     "financialData": {
-                        "totalCash":      {"raw": info.get("totalCash")},
-                        "totalDebt":      {"raw": info.get("totalDebt")},
-                        "freeCashflow":   {"raw": fcf},
-                        "totalAssets":    {"raw": ta},
-                        "earningsGrowth": {"raw": info.get("earningsGrowth")},
-                        "revenueGrowth":  {"raw": info.get("revenueGrowth")},
+                        "totalCash":        {"raw": info.get("totalCash")},
+                        "totalDebt":        {"raw": info.get("totalDebt")},
+                        "freeCashflow":     {"raw": fcf},
+                        "totalAssets":      {"raw": ta},
+                        "totalLiabilities": {"raw": tl},
+                        "earningsGrowth":   {"raw": info.get("earningsGrowth")},
+                        "revenueGrowth":    {"raw": info.get("revenueGrowth")},
                     },
                     "defaultKeyStatistics": {
                         "sharesOutstanding": {"raw": shares},
@@ -196,3 +198,19 @@ async def proxy(url: str = Query(...)):
             raise HTTPException(status_code=504, detail="Timeout")
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+                        "dividendRate":  {"raw": info.get("dividendRate")},
+                        "dividendYield": {"raw": info.get("dividendYield")},
+                    },
+                }], "error": None}})
+
+            raise HTTPException(status_code=502, detail="Date fundamentale indisponibile")
+
+        # ── Non-Yahoo ─────────────────────────────────────
+        try:
+            r = await client.get(url, headers=HEADERS, timeout=15.0)
+            try:
+                return JSONResponse(content=r.json(), status_code=r.status_code)
+            except Exception:
+                return JSONResponse(content={"raw": r.text}, status_code=r.status_code)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=str(e))
