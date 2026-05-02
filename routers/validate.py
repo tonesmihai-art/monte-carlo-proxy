@@ -102,6 +102,10 @@ def _clean_json(raw: str) -> str:
         m = re.search(r"(\{.*\})", raw, re.DOTALL)
         if m:
             raw = m.group(1).strip()
+        else:
+            # Nu exista niciun JSON in raspuns — returnam string gol
+            # ca sa fie clar la json.loads() ca e invalid
+            return ""
     raw = re.sub(r'\bTrue\b',  'true',  raw)
     raw = re.sub(r'\bFalse\b', 'false', raw)
     raw = re.sub(r'\bNone\b',  'null',  raw)
@@ -242,19 +246,33 @@ Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
                         ),
                     )
                     try:
-                        raw = resp.text.strip()
+                        raw_candidate = resp.text.strip()
                     except Exception:
                         parts = (resp.candidates or [{}])[0].get("content", {}).get("parts", [])
-                        raw   = parts[0].get("text", "").strip() if parts else None
-                    if raw:
-                        print(f"[Gemini] model={gm} OK, {len(raw)} chars")
-                        break
+                        raw_candidate = parts[0].get("text", "").strip() if parts else None
+                    if raw_candidate:
+                        # Validam JSON-ul INAINTE sa acceptam raspunsul
+                        # Daca e invalid, incercam urmatorul model
+                        try:
+                            json.loads(_clean_json(raw_candidate))
+                            raw = raw_candidate
+                            print(f"[Gemini] model={gm} OK, {len(raw)} chars")
+                            break
+                        except (json.JSONDecodeError, ValueError) as je:
+                            last_err = je
+                            print(f"[Gemini] model={gm} JSON invalid ({je}) — incerc urmatorul model")
+                            continue
+                    else:
+                        print(f"[Gemini] model={gm} raspuns gol — incerc urmatorul model")
                 except Exception as e:
                     last_err = e
-                    print(f"[Gemini] model={gm} eroare: {e}")
+                    print(f"[Gemini] model={gm} eroare API: {e}")
                     continue
             if not raw:
-                raise Exception(f"Gemini indisponibil (toate modelele au esuat): {last_err}")
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Gemini indisponibil — toate modelele au esuat. Ultima eroare: {last_err}"
+                )
         else:
             claude  = anthropic.Anthropic(api_key=api_key)
             message = claude.messages.create(
