@@ -311,6 +311,108 @@ Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── Gemini Verdict — evaluare calitativă smart ────────────────────────────
+
+class GeminiVerdictRequest(BaseModel):
+    sims: list   # [{ticker, name, score, verdict, margin, ret, up, down, prob, vol, sent, dev, div, period}]
+
+
+@router.post("/gemini-verdict")
+async def gemini_verdict(req: GeminiVerdictRequest):
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY lipsa pe server")
+    if not _GEMINI_OK:
+        raise HTTPException(status_code=500, detail="google-genai package nu e instalat")
+    if not req.sims or len(req.sims) < 2:
+        raise HTTPException(status_code=400, detail="Minim 2 simulari necesare")
+
+    def _fmt(v, decimals=1, pct=False):
+        if v is None:
+            return "—"
+        sign = "+" if float(v) >= 0 else ""
+        return f"{sign}{float(v):.{decimals}f}{'%' if pct else ''}"
+
+    sims_text = ""
+    for s in req.sims:
+        ticker  = s.get("ticker", "?")
+        name    = s.get("name", "")
+        score   = s.get("score")
+        verdict = s.get("verdict", "")
+        period  = s.get("period", 30)
+
+        sims_text += f"\n▸ {ticker}" + (f" ({name})" if name else "") + ":\n"
+        if score is not None:
+            sims_text += f"  Scor final: {score}/100  Semnal: {verdict}\n"
+        if s.get("margin") is not None:
+            m = float(s["margin"])
+            label = "subevaluat semnificativ" if m > 30 else "subevaluat moderat" if m > 10 else "la valoare justa" if m > -5 else "supraevaluat"
+            sims_text += f"  Marja siguranta vs DCF: {_fmt(m, pct=True)} ({label})\n"
+        if s.get("ret") is not None:
+            sims_text += f"  Randament P50 ({period}z): {_fmt(s['ret'], pct=True)}\n"
+        if s.get("up") is not None and s.get("down") is not None:
+            sims_text += f"  Asimetrie P90/P10: {_fmt(s['up'], pct=True)} / {_fmt(s['down'], pct=True)}\n"
+        if s.get("prob") is not None:
+            sims_text += f"  Probabilitate profit {period}z: {float(s['prob']):.1f}%\n"
+        if s.get("vol") is not None:
+            sims_text += f"  Volatilitate anualizata: {float(s['vol']):.1f}%/an\n"
+        if s.get("div") is not None:
+            sims_text += f"  Dividend yield: {float(s['div']):.2f}%\n"
+        if s.get("sent") is not None:
+            sims_text += f"  Sentiment: {_fmt(s['sent'], decimals=3)}\n"
+        if s.get("dev") is not None:
+            sims_text += f"  Deviatia fata de MA60: {_fmt(s['dev'], pct=True)}\n"
+
+    prompt = f"""Esti un analist financiar senior cu 20 de ani experienta pe pietele europene.
+
+Ai in fata rezultatele unei comparatii Monte Carlo (30.000 simulari) intre {len(req.sims)} actiuni:
+{sims_text}
+
+Scrie o analiza calitativa aprofundata in 4 paragrafe clare:
+
+PARAGRAFUL 1 — Verdict independent: Este castigatorul matematic cu adevarat superior? \
+Exista discrepante intre scorul total si semnalele individuale? \
+Mentioneaza explicit daca esti de acord sau nu cu clasamentul si de ce.
+
+PARAGRAFUL 2 — Raport risc/randament real: Analizeaza asimetria P90/P10 pentru fiecare actiune — \
+nu doar randamentul median P50. O actiune cu P50 mic dar asimetrie favorabila poate fi mai buna \
+decat una cu P50 mare dar risc de cadere puternica. Integreaza volatilitatea si probabilitatea de profit.
+
+PARAGRAFUL 3 — Semnale contradictorii sau ascunse: Identifica orice contradictie intre metrici \
+(ex: marja mare dar randament negativ, volatilitate ridicata cu probabilitate mica, \
+dividend atractiv vs supraevaluare). Ce spune sentimentul despre contextul actual al fiecarei actiuni?
+
+PARAGRAFUL 4 — Recomandare practica: Care actiune ofera cel mai bun punct de intrare acum si de ce? \
+Ce risc specific trebuie monitorizat pentru castigator? Fii direct si concis ca un analist real.
+
+Scrie in romana. Fara titluri, fara bullet points — text curgator, ton profesionist."""
+
+    client_g = google_genai.Client(api_key=api_key, http_options={"api_version": "v1"})
+
+    last_err = None
+    for model in ["gemini-2.5-flash", "gemini-2.5-flash-lite"]:
+        try:
+            resp = client_g.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    max_output_tokens=1200,
+                    temperature=0.4,
+                ),
+            )
+            text = resp.text.strip() if resp.text else None
+            if text:
+                print(f"[gemini-verdict] model={model} OK, {len(text)} chars")
+                return JSONResponse(content={"evaluare": text, "model": model})
+            print(f"[gemini-verdict] model={model} raspuns gol")
+        except Exception as e:
+            last_err = e
+            print(f"[gemini-verdict] model={model} eroare: {e}")
+            continue
+
+    raise HTTPException(status_code=503, detail=f"Gemini indisponibil: {last_err}")
+
+
 # ── Gemini Verdict Comparație — evaluare calitativă smart ────────────────
 
 class GeminiVerdictRequest(BaseModel):
@@ -394,6 +496,101 @@ Răspunde exclusiv în română. Text curgător, fără liste sau titluri."""
                 config=genai_types.GenerateContentConfig(
                     max_output_tokens=400,
                     temperature=0.35,
+                ),
+            )
+            text = resp.text.strip() if resp.text else None
+            if text:
+                print(f"[gemini-verdict] model={model} OK, {len(text)} chars")
+                return JSONResponse(content={"evaluare": text, "model": model})
+            print(f"[gemini-verdict] model={model} raspuns gol")
+        except Exception as e:
+            last_err = e
+            print(f"[gemini-verdict] model={model} eroare: {e}")
+            continue
+
+    raise HTTPException(status_code=503, detail=f"Gemini indisponibil: {last_err}")
+
+
+# ── Gemini Verdict — evaluare calitativa smart ────────────────────────────
+
+class GeminiVerdictRequest(BaseModel):
+    sims: list   # [{ticker, name, score, verdict, margin, ret, up, down, prob, vol, sent, dev, div, period}]
+
+
+@router.post("/gemini-verdict")
+async def gemini_verdict(req: GeminiVerdictRequest):
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY lipsa pe server")
+    if not _GEMINI_OK:
+        raise HTTPException(status_code=500, detail="google-genai package nu e instalat")
+    if not req.sims or len(req.sims) < 2:
+        raise HTTPException(status_code=400, detail="Minim 2 simulari necesare")
+
+    def _fmt(v, decimals=1, pct=False):
+        if v is None:
+            return "—"
+        sign = "+" if float(v) >= 0 else ""
+        return f"{sign}{float(v):.{decimals}f}{'%' if pct else ''}"
+
+    sims_text = ""
+    for s in req.sims:
+        ticker  = s.get("ticker", "?")
+        name    = s.get("name", "")
+        score   = s.get("score")
+        verdict = s.get("verdict", "")
+        period  = s.get("period", 30)
+
+        sims_text += f"\n▸ {ticker}" + (f" ({name})" if name else "") + ":\n"
+        if score is not None:
+            sims_text += f"  Scor final: {score}/100  Semnal: {verdict}\n"
+        if s.get("margin") is not None:
+            m = float(s["margin"])
+            label = "subevaluat semnificativ" if m > 30 else "subevaluat moderat" if m > 10 else "la valoare justa" if m > -5 else "supraevaluat"
+            sims_text += f"  Marja siguranta vs DCF: {_fmt(m, pct=True)} ({label})\n"
+        if s.get("ret") is not None:
+            sims_text += f"  Randament P50 ({period}z): {_fmt(s['ret'], pct=True)}\n"
+        if s.get("up") is not None and s.get("down") is not None:
+            sims_text += f"  Asimetrie P90/P10: {_fmt(s['up'], pct=True)} / {_fmt(s['down'], pct=True)}\n"
+        if s.get("prob") is not None:
+            sims_text += f"  Probabilitate profit {period}z: {float(s['prob']):.1f}%\n"
+        if s.get("vol") is not None:
+            sims_text += f"  Volatilitate anualizata: {float(s['vol']):.1f}%/an\n"
+        if s.get("div") is not None:
+            sims_text += f"  Dividend yield: {float(s['div']):.2f}%\n"
+        if s.get("sent") is not None:
+            sims_text += f"  Sentiment: {_fmt(s['sent'], decimals=3)}\n"
+        if s.get("dev") is not None:
+            sims_text += f"  Deviatia fata de MA60: {_fmt(s['dev'], pct=True)}\n"
+
+    prompt = f"""Esti un analist financiar senior cu 20 de ani experienta pe pietele europene.
+
+Ai in fata rezultatele unei comparatii Monte Carlo (30.000 simulari) intre {len(req.sims)} actiuni:
+{sims_text}
+
+Scrie o analiza calitativa aprofundata in 4 paragrafe clare:
+
+PARAGRAFUL 1 — Verdict independent: Este castigatorul matematic cu adevarat superior? Exista discrepante intre scorul total si semnalele individuale? Mentioneaza explicit daca esti de acord sau nu cu clasamentul si de ce.
+
+PARAGRAFUL 2 — Raport risc/randament real: Analizeaza asimetria P90/P10 pentru fiecare actiune — nu doar randamentul median P50. O actiune cu P50 mic dar asimetrie favorabila poate fi mai buna decat una cu P50 mare dar risc de cadere puternica. Integreaza volatilitatea si probabilitatea de profit.
+
+PARAGRAFUL 3 — Semnale contradictorii sau ascunse: Identifica orice contradictie intre metrici (ex: marja mare dar randament negativ, volatilitate ridicata cu probabilitate mica, dividend atractiv vs supraevaluare). Ce spune sentimentul despre contextul actual al fiecarei actiuni?
+
+PARAGRAFUL 4 — Recomandare practica: Care actiune ofera cel mai bun punct de intrare acum si de ce? Ce risc specific trebuie monitorizat pentru castigator? Fii direct si concis ca un analist real.
+
+Scrie in romana. Fara titluri, fara bullet points — text curgator, ton profesionist."""
+
+    client_g = google_genai.Client(api_key=api_key, http_options={"api_version": "v1"})
+
+    last_err = None
+    for model in ["gemini-2.5-flash", "gemini-2.5-flash-lite"]:
+        try:
+            resp = client_g.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    max_output_tokens=1200,
+                    temperature=0.4,
                 ),
             )
             text = resp.text.strip() if resp.text else None
