@@ -141,12 +141,18 @@ async def validate_fundamentals(req: ValidateRequest):
         if not api_key:
             raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY lipsa")
 
-    sym = "$" if req.currency == "USD" else f"{req.currency} "
+    sym     = "$" if req.currency == "USD" else f"{req.currency} "
+    is_reit = "reit" in req.sector.lower() or "imobiliar" in req.sector.lower()
 
-    field_lines   = "\n".join(f"  {k}: {v}" for k, v in req.fields.items() if v is not None)
-    missing_fields = [k for k, v in req.fields.items() if v is None]
+    # Excludem 'occupancy' din fields/missing pentru sectoare non-REIT
+    _fields_filtered = {
+        k: v for k, v in req.fields.items()
+        if not (k == "occupancy" and not is_reit)
+    }
+    field_lines   = "\n".join(f"  {k}: {v}" for k, v in _fields_filtered.items() if v is not None)
+    missing_fields = [k for k, v in _fields_filtered.items() if v is None]
     if req.estimatedFields:
-        missing_fields = list(set(missing_fields + req.estimatedFields))
+        missing_fields = list(set(missing_fields + [f for f in req.estimatedFields if f != "occupancy" or is_reit]))
     missing_lines = (
         "\nCampuri LIPSA (furnizeaza valori reale din cunostintele tale despre " + req.ticker + "):\n" +
         "\n".join(f"  {k}: LIPSA" for k in missing_fields)
@@ -162,8 +168,6 @@ async def validate_fundamentals(req: ValidateRequest):
         )
     else:
         fcf_rule = "- FCF/actiune: intre -10 si 20 pentru companii obisnuite; valori sub 0.05 sau peste 30 sunt aproape sigur erori Yahoo"
-
-    is_reit = "reit" in req.sector.lower() or "imobiliar" in req.sector.lower()
 
     # ── Fetch live date REIT ──────────────────────────
     live_reit = {}
@@ -200,23 +204,29 @@ async def validate_fundamentals(req: ValidateRequest):
         f"Pentru metrici structurale standard (rata ocupare REIT, LTV): poti estima din cunostinte de sector daca valoarea specifica lipseste."
     )
 
+    reit_rules = (
+        "\n- ltv (REIT): intre 10 si 70"
+        "\n- occupancy (REIT): intre 50 si 100"
+    ) if is_reit else ""
+
     prompt = f"""Verifica valorile fundamentale pentru {req.ticker} (sector: {req.sector}, pret curent: {sym}{req.currentPrice}).
 
-Valori extrase automat:
+Valori extrase automat (cheile sunt cele exacte pe care TREBUIE sa le folosesti in 'corrections'):
 {field_lines}{missing_lines}
 
 Reguli de validare:
-- EPS: intre -50 si 500 pentru actiuni normale
-- P/E: intre 3 si 200; negativ = companie pe pierdere (acceptabil)
+- eps: intre -50 si 500 pentru actiuni normale
+- pe: intre 3 si 200; negativ = companie pe pierdere (acceptabil)
 {fcf_rule}
-- Crestere (%): intre -50 si 50; peste 100 e aproape sigur o eroare Yahoo
-- WACC: intre 5 si 20
-- Active/Cash/Datorii (milioane): verifica ordinul de marime pentru companie
-- LTV (REIT): intre 10 si 70
-- Ocupare (REIT): intre 50 si 100
-- Dividend: yield implicit (dividend/pret) intre 0 si 20%{reit_note}
+- growth: intre -50 si 50; peste 100 e aproape sigur o eroare Yahoo
+- wacc: intre 5 si 20
+- assets, cash, totalLiabilities (milioane): verifica ordinul de marime pentru companie{reit_rules}
+- dividend: yield implicit (dividend/pret) intre 0 si 20%{reit_note}
 
-IMPORTANT: Pentru valori financiare precise (EPS, FCF, active) furnizeaza NUMAI daca esti sigur pentru {req.ticker}. Pentru metrici structurale (ocupare, LTV) poti estima din sector daca valoarea lipseste.
+IMPORTANT:
+- In campul 'corrections' foloseste EXACT aceste nume de chei (nu le traduce, nu le redenumi): eps, pe, fcf, growth, wacc, assets, cash, totalLiabilities, shares, ltv, occupancy, dividend
+- Pentru valori financiare precise (eps, fcf, assets, totalLiabilities) furnizeaza NUMAI daca esti sigur pentru {req.ticker}.
+- Pentru metrici structurale (occupancy, ltv) poti estima din sector daca valoarea lipseste.
 
 Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
 {{
@@ -285,6 +295,11 @@ Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
 
         data = json.loads(_clean_json(raw))
         data["_provider"] = req.provider
+
+        # Filtru de siguranta: eliminam 'occupancy' din corrections daca nu e REIT
+        if not is_reit and isinstance(data.get("corrections"), dict):
+            data["corrections"].pop("occupancy", None)
+
         return JSONResponse(content=data)
 
     except json.JSONDecodeError as e:
