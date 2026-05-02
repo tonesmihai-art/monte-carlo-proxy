@@ -385,17 +385,35 @@ Paragraful 4: Recomanda o singura actiune pentru intrare acum. Explica de ce. Nu
     client_g = google_genai.Client(api_key=api_key, http_options={"api_version": "v1"})
 
     last_err = None
-    for model in ["gemini-2.5-flash", "gemini-2.5-flash-lite"]:
+    # gemini-2.5-flash cu thinking_budget limitat: reasoning real, incape in 30s Render
+    # fallback: gemini-2.0-flash rapid daca 2.5 esueaza
+    model_configs = [
+        {
+            "model": "gemini-2.5-flash",
+            "config": genai_types.GenerateContentConfig(
+                max_output_tokens=900,
+                temperature=1.0,  # obligatoriu pentru thinking
+                thinking_config=genai_types.ThinkingConfig(thinking_budget=2048),
+            ),
+        },
+        {
+            "model": "gemini-2.0-flash",
+            "config": genai_types.GenerateContentConfig(
+                max_output_tokens=900,
+                temperature=0.5,
+            ),
+        },
+    ]
+
+    for mc in model_configs:
+        model = mc["model"]
         try:
             resp = client_g.models.generate_content(
                 model=model,
                 contents=[
                     {"role": "user", "parts": [{"text": f"{system_prompt}\n\n{user_prompt}"}]}
                 ],
-                config=genai_types.GenerateContentConfig(
-                    max_output_tokens=1400,
-                    temperature=0.5,
-                ),
+                config=mc["config"],
             )
             text = resp.text.strip() if resp.text else None
             if text:
