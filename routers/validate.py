@@ -405,14 +405,14 @@ Paragraful 4: Recomanda o singura actiune pentru intrare acum. Explica de ce. Nu
         },
     ]
 
+    full_prompt_text = system_prompt + "\n\n" + user_prompt
+
     for mc in model_configs:
         model = mc["model"]
         try:
             resp = client_g.models.generate_content(
                 model=model,
-                contents=[
-                    {"role": "user", "parts": [{"text": f"{system_prompt}\n\n{user_prompt}"}]}
-                ],
+                contents=full_prompt_text,
                 config=mc["config"],
             )
             text = resp.text.strip() if resp.text else None
@@ -427,3 +427,14 @@ Paragraful 4: Recomanda o singura actiune pentru intrare acum. Explica de ce. Nu
 
     raise HTTPException(status_code=503, detail=f"Gemini indisponibil: {last_err}")
 
+            text = resp.text.strip() if resp.text else None
+            if text:
+                print(f"[gemini-verdict] model={model} OK, {len(text)} chars")
+                return JSONResponse(content={"evaluare": text, "model": model})
+            print(f"[gemini-verdict] model={model} raspuns gol")
+        except Exception as e:
+            last_err = e
+            print(f"[gemini-verdict] model={model} eroare: {e}")
+            continue
+
+    raise HTTPException(status_code=503, detail=f"Gemini indisponibil: {last_err}")
