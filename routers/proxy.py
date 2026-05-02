@@ -83,8 +83,9 @@ async def proxy(url: str = Query(...)):
             data = await _yahoo_get(client, qs_url)
 
             if data and data.get("quoteSummary", {}).get("result"):
-                # Extrage totalAssets din balance sheet separat
-                total_assets = None
+                # Extrage totalAssets si totalLiabilities din balance sheet separat
+                total_assets      = None
+                total_liabilities = None
                 bs_url  = (
                     f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker_sym}"
                     f"?modules=balanceSheetHistory&formatted=false"
@@ -92,10 +93,22 @@ async def proxy(url: str = Query(...)):
                 bs_data = await _yahoo_get(client, bs_url)
                 try:
                     stmts = bs_data["quoteSummary"]["result"][0]["balanceSheetHistory"]["balanceSheetStatements"]
-                    raw   = stmts[0].get("totalAssets", {})
+                    stmt0 = stmts[0]
+
+                    raw = stmt0.get("totalAssets", {})
                     total_assets = raw.get("raw") if isinstance(raw, dict) else (
                         raw if isinstance(raw, (int, float)) else None
                     )
+
+                    # totalLiabilitiesNetMinorityInterest = pasive totale (fara interese minoritare)
+                    for liab_key in ("totalLiabilitiesNetMinorityInterest", "totalLiab"):
+                        raw_l = stmt0.get(liab_key, {})
+                        val_l = raw_l.get("raw") if isinstance(raw_l, dict) else (
+                            raw_l if isinstance(raw_l, (int, float)) else None
+                        )
+                        if val_l is not None:
+                            total_liabilities = val_l
+                            break
                 except Exception:
                     pass
 
@@ -118,12 +131,14 @@ async def proxy(url: str = Query(...)):
                     if yf_data.get("total_assets"):
                         total_assets = yf_data["total_assets"]
 
-                # Injecteaza totalAssets in financialData
+                # Injecteaza totalAssets + totalLiabilities in financialData
                 try:
                     result0 = data["quoteSummary"]["result"][0]
                     fd = result0.setdefault("financialData", {})
                     if total_assets:
                         fd["totalAssets"] = {"raw": total_assets}
+                    if total_liabilities:
+                        fd["totalLiabilities"] = {"raw": total_liabilities}
 
                     # Normalizeaza campurile numerice la format {raw: value}
                     def _wrap(d):
