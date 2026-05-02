@@ -110,7 +110,8 @@ def _yf_ticker_data(ticker_sym: str) -> dict:
             info = t.info or {}
         except Exception:
             pass
-        total_assets = None
+        total_assets      = None
+        total_liabilities = None
         try:
             bs = t.balance_sheet
             if bs is not None and not bs.empty:
@@ -120,12 +121,23 @@ def _yf_ticker_data(ticker_sym: str) -> dict:
                         if not val.empty:
                             total_assets = float(val.iloc[0])
                             break
+                for label in [
+                    "Total Liabilities Net Minority Interest",
+                    "Total Liabilities",
+                    "TotalLiabilitiesNetMinorityInterest",
+                    "TotalLiab",
+                ]:
+                    if label in bs.index:
+                        val = bs.loc[label].dropna()
+                        if not val.empty:
+                            total_liabilities = float(val.iloc[0])
+                            break
         except Exception:
             pass
-        return {"info": info, "total_assets": total_assets}
+        return {"info": info, "total_assets": total_assets, "total_liabilities": total_liabilities}
     except Exception as e:
         print(f"[yfinance] {ticker_sym}: {e}")
-        return {"info": {}, "total_assets": None}
+        return {"info": {}, "total_assets": None, "total_liabilities": None}
 
 
 def _to_finnhub_ticker(ticker: str) -> str:
@@ -134,3 +146,4 @@ def _to_finnhub_ticker(ticker: str) -> str:
         if ticker.endswith(suffix):
             return f"{exchange}:{ticker[:-len(suffix)]}"
     return ticker
+
