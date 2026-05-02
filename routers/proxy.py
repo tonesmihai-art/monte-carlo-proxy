@@ -100,7 +100,6 @@ async def proxy(url: str = Query(...)):
                         raw if isinstance(raw, (int, float)) else None
                     )
 
-                    # totalLiabilitiesNetMinorityInterest = pasive totale (fara interese minoritare)
                     for liab_key in ("totalLiabilitiesNetMinorityInterest", "totalLiab"):
                         raw_l = stmt0.get(liab_key, {})
                         val_l = raw_l.get("raw") if isinstance(raw_l, dict) else (
@@ -124,7 +123,7 @@ async def proxy(url: str = Query(...)):
                     except Exception:
                         pass
 
-                # Fallback yfinance (EU + US)
+                # Fallback yfinance
                 if not total_assets:
                     loop    = asyncio.get_event_loop()
                     yf_data = await loop.run_in_executor(None, _yf_ticker_data, ticker_sym)
@@ -140,7 +139,6 @@ async def proxy(url: str = Query(...)):
                     if total_liabilities:
                         fd["totalLiabilities"] = {"raw": total_liabilities}
 
-                    # Normalizeaza campurile numerice la format {raw: value}
                     def _wrap(d):
                         for k, v in d.items():
                             if isinstance(v, (int, float)):
@@ -198,19 +196,3 @@ async def proxy(url: str = Query(...)):
             raise HTTPException(status_code=504, detail="Timeout")
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
-                        "dividendRate":  {"raw": info.get("dividendRate")},
-                        "dividendYield": {"raw": info.get("dividendYield")},
-                    },
-                }], "error": None}})
-
-            raise HTTPException(status_code=502, detail="Date fundamentale indisponibile")
-
-        # ── Non-Yahoo ─────────────────────────────────────
-        try:
-            r = await client.get(url, headers=HEADERS, timeout=15.0)
-            try:
-                return JSONResponse(content=r.json(), status_code=r.status_code)
-            except Exception:
-                return JSONResponse(content={"raw": r.text}, status_code=r.status_code)
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=str(e))
