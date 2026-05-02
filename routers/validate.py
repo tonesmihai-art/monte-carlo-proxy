@@ -399,8 +399,8 @@ Paragraful 4: Recomanda o singura actiune pentru intrare acum. Explica de ce. Nu
         )
 
     model_configs = [
-        {"model": "gemini-2.5-flash",  "config": _thinking_cfg},
-        {"model": "gemini-2.0-flash",  "config": genai_types.GenerateContentConfig(
+        {"model": "gemini-2.5-flash",      "config": _thinking_cfg},
+        {"model": "gemini-2.5-flash-lite",  "config": genai_types.GenerateContentConfig(
             max_output_tokens=900, temperature=0.5)},
     ]
 
