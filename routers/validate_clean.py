@@ -213,15 +213,21 @@ async def validate_fundamentals(req: ValidateRequest):
     ) if missing_fields else ""
 
     eps_val = req.fields.get("eps")
-    if eps_val and eps_val > 0:
-        fcf_max  = round(eps_val * 3, 2)
-        fcf_min  = round(eps_val * -2, 2)
+    shares_val = req.fields.get("shares")  # shares in milioane
+    if eps_val and eps_val > 0 and shares_val and shares_val > 0:
+        # FCF total M estimat: EPS * shares * factor realist
+        fcf_max_m = round(eps_val * shares_val * 3, 0)
+        fcf_min_m = round(eps_val * shares_val * -2, 0)
         fcf_rule = (
-            f"- FCF/actiune: pentru aceasta companie (EPS={eps_val}), intervalul realist este "
-            f"[{fcf_min}, {fcf_max}]; orice valoare in afara acestui interval este o eroare de date, NU o sugera"
+            f"- FCF total (milioane): pentru {req.ticker} (EPS={eps_val}, shares={shares_val}M), "
+            f"intervalul realist este [{fcf_min_m}M, {fcf_max_m}M]; "
+            f"valori foarte mici (sub 10M pt companii mari) sau enorme sunt erori de date"
         )
     else:
-        fcf_rule = "- FCF/actiune: intre -10 si 20 pentru companii obisnuite; valori sub 0.05 sau peste 30 sunt aproape sigur erori Yahoo"
+        fcf_rule = (
+            "- FCF total (milioane): verifica ordinul de marime pentru aceasta companie; "
+            "valori negative acceptabile (capex mare); valori peste 100.000M sunt aproape sigur erori"
+        )
 
     # ── Fetch live date REIT ──────────────────────────
     live_reit = {}
@@ -274,7 +280,7 @@ Reguli de validare:
 {fcf_rule}
 - growth: intre -50 si 50; peste 100 e aproape sigur o eroare Yahoo
 - wacc: intre 5 si 20
-- assets, cash, totalLiabilities (milioane): verifica ordinul de marime pentru companie{reit_rules}
+- fcf, assets, cash, totalLiabilities (milioane): verifica ordinul de marime pentru companie{reit_rules}
 - dividend: yield implicit (dividend/pret) intre 0 si 20%{reit_note}
 
 IMPORTANT:
