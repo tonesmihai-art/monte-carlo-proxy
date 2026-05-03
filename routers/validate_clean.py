@@ -28,6 +28,35 @@ from yahoo_client import _yahoo_session, HEADERS, _to_finnhub_ticker
 router = APIRouter()
 
 
+# ── Benchmarks P/E sectoriale (Damodaran 2025, piete globale) ──────────
+# sursa: pages.stern.nyu.edu/~adamodar/ — actualizat anual
+# (label, pe_median, div_yield_avg%)
+SECTOR_PE_DAMODARAN = {
+    "energy":                  ("Energie",            10.5, 4.0),
+    "tech":                    ("Tehnologie",         28.0, 0.8),
+    "technology":              ("Tehnologie",         28.0, 0.8),
+    "communication services":  ("Comunicatii",        16.5, 1.5),
+    "utilities":               ("Utilitati",          17.5, 3.8),
+    "utilitati":               ("Utilitati",          17.5, 3.8),
+    "financial services":      ("Servicii Financiare",13.5, 2.8),
+    "banci":                   ("Banci",              12.0, 3.5),
+    "insurance":               ("Asigurari",          15.0, 2.0),
+    "asigurari":               ("Asigurari",          15.0, 2.0),
+    "real estate":             ("Imobiliare/REIT",    35.0, 4.5),
+    "reit":                    ("REIT",               35.0, 4.5),
+    "industrials":             ("Industriale",        20.5, 1.8),
+    "conglomerate":            ("Conglomerate",       20.5, 1.8),
+    "healthcare":              ("Sanatate",           22.5, 1.6),
+    "basic materials":         ("Materiale",          14.0, 3.0),
+    "materiale":               ("Materiale",          14.0, 3.0),
+    "consumer defensive":      ("Consum Defensiv",    20.0, 2.8),
+    "consumer cyclical":       ("Consum Ciclic",      18.0, 1.2),
+    "consum":                  ("Consum",             19.0, 2.0),
+    "auto":                    ("Auto",               13.0, 1.5),
+    "shipping":                ("Transport Naval",     8.5, 4.5),
+}
+
+
 # ── Helper: fetch date REIT din surse financiare ─────
 
 async def _fetch_reit_live_data(ticker: str) -> dict:
@@ -438,6 +467,23 @@ async def gemini_verdict(req: GeminiVerdictRequest):
         except Exception as e:
             print(f"[gemini-verdict] external fetch eroare: {e}")
 
+    # -- Construieste context P/E sectorial (Damodaran) --
+    sector_pe_context = ""
+    sector_pe_lines = []
+    for s in req.sims:
+        sector_raw = (s.get("sector") or "").lower().strip()
+        pe_info    = SECTOR_PE_DAMODARAN.get(sector_raw)
+        if pe_info:
+            label, pe_med, div_med = pe_info
+            line = f"  {s['ticker']}: sector {label} — P/E median sector = {pe_med}x, dividend yield mediu sector = {div_med}%"
+            sector_pe_lines.append(line)
+    if sector_pe_lines:
+        sector_pe_context = (
+            "\nDATE SECTORIALE (Damodaran 2025):\n"
+            + "\n".join(sector_pe_lines)
+            + "\n"
+        )
+
     # -- Construieste sectiunea surse externe --
     ext_lines = []
     if has_external:
@@ -481,21 +527,33 @@ async def gemini_verdict(req: GeminiVerdictRequest):
         "Intri direct in analiza datelor."
     )
 
+    par4_label = "opinie independenta din surse externe Finnhub" if has_external else "opinie calitativa independenta de simulare"
     user_prompt = (
         f"Comparatie Monte Carlo (30.000 simulari) pentru {len(req.sims)} actiuni:\n"
         f"{sims_text}"
+        f"{sector_pe_context}"
         f"{ext_text}\n"
-        "\nScrie o analiza in exact 5 paragrafe. Fiecare paragraf are 3-5 propozitii. Fara titluri, fara liste.\n"
-        "\nParagraful 1: Evalueaza daca scorul matematic reflecta corect realitatea."
+        "\nFORMAT OBLIGATORIU — respecta EXACT aceasta structura, separa fiecare element cu o linie goala:\n"
+        "5 paragrafe principale (3-5 propozitii fiecare), dupa fiecare un bloc [OBJ]...[/OBJ] (1-2 propozitii validare externa), la final un bloc [GENERAL]...[/GENERAL] (3-4 propozitii analiza contextuala).\n"
+        "Fara titluri, fara liste, fara text in afara acestui format.\n"
+        "\nParagraf 1: Evalueaza daca scorul matematic reflecta corect realitatea."
         " Citeaza numerele concrete (scor, marja, probabilitate). Spune daca esti de acord cu castigatorul sau nu.\n"
-        "\nParagraful 2: Compara asimetria P90 vs P10 pentru fiecare actiune."
+        "[OBJ]Compara P/E si dividend yield al castigatorului cu media sectorului din datele Damodaran de mai sus. Citeaza numerele concrete.[/OBJ]\n"
+        "\nParagraf 2: Compara asimetria P90 vs P10 pentru fiecare actiune."
         " Cine are cel mai bun raport potential/risc real, independent de P50?"
         " Cum se coreleaza volatilitatea cu asimetria?\n"
-        "\nParagraful 3: Identifica principalele contradictii din date."
+        "[OBJ]Raporteaza volatilitatea la contextul sectorului. Este ridicata sau normala pentru sector? Citeaza benchmark-ul sectorial.[/OBJ]\n"
+        "\nParagraf 3: Identifica principalele contradictii din date."
         " Marja de siguranta contrazice randamentul MC? Sentimentul negativ sau pozitiv schimba contextul?"
         " Dividendul este sustenabil?\n"
-        f"\n{par4}\n"
-        "\nParagraful 5: Recomanda o singura actiune pentru intrare acum. Explica de ce. Numeste un risc concret de urmarit."
+        "[OBJ]Compara dividend yield-ul fiecarei actiuni cu media sectorului din datele de mai sus. Citeaza numerele si exprima o opinie clara.[/OBJ]\n"
+        f"\nParagraf 4: {par4_label} —"
+        f" {par4.split(chr(8212))[-1].strip() if chr(8212) in par4 else par4}\n"
+        "[OBJ]Pe baza recomandarilor analistilor si stirilor: consensul extern confirma sau contrazice simularea? Citeaza buy/hold/sell count.[/OBJ]\n"
+        "\nParagraf 5: Recomanda o singura actiune pentru intrare acum. Explica de ce. Numeste un risc concret de urmarit.\n"
+        "[OBJ]Ce date externe (sectorial, analisti, stiri) sustin sau slabesc aceasta recomandare? Fii specific.[/OBJ]\n"
+        "\n[GENERAL]Analiza generala contextuala: contextul macro/sectorial, trenduri de sector, factori externi relevanti"
+        " pentru aceste companii bazat pe datele injectate. 3-4 propozitii.[/GENERAL]"
     )
 
     client_g = google_genai.Client(api_key=api_key, http_options={"api_version": "v1"})
@@ -509,7 +567,7 @@ async def gemini_verdict(req: GeminiVerdictRequest):
                     {"role": "user", "parts": [{"text": f"{system_prompt}\n\n{user_prompt}"}]}
                 ],
                 config=genai_types.GenerateContentConfig(
-                    max_output_tokens=1400,
+                    max_output_tokens=2200,
                     temperature=0.5,
                 ),
             )
