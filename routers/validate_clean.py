@@ -557,7 +557,7 @@ async def gemini_verdict(req: GeminiVerdictRequest):
     )
 
     # ── Apel REST direct (httpx) — SDK pune thinkingConfig in locul gresit ──
-    GEMINI_BASE = "https://generativelanguage.googleapis.com/v1alpha/models"
+    GEMINI_BASE = "https://generativelanguage.googleapis.com/v1/models"
 
     # gemini-2.5-flash gandeste intern; thinkingConfig extern nu e suportat
     model_cfgs = [
