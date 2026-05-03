@@ -80,26 +80,96 @@ async def proxy(url: str = Query(...)):
                 f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker_sym}"
                 f"?modules={modules}&formatted=false"
             )
-            data = await _yahoo_get(client, qs_url)
+            # Fetch paralel: main + balanceSheet + cashflow + earningsTrend
+            cf_url = (
+                f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker_sym}"
+                f"?modules=cashflowStatement,earningsTrend&formatted=false"
+            )
+            bs_url = (
+                f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker_sym}"
+                f"?modules=balanceSheetHistory&formatted=false"
+            )
+            data, cf_data, bs_data = await asyncio.gather(
+                _yahoo_get(client, qs_url),
+                _yahoo_get(client, cf_url),
+                _yahoo_get(client, bs_url),
+                return_exceptions=True
+            )
+            if isinstance(data, Exception):      data    = None
+            if isinstance(cf_data, Exception):   cf_data = None
+            if isinstance(bs_data, Exception):   bs_data = None
 
             if data and data.get("quoteSummary", {}).get("result"):
-                # Extrage totalAssets si totalLiabilities din balance sheet separat
+                # ── Helper: extrage valoare raw din camp Yahoo ──
+                def _rv(field):
+                    if field is None: return None
+                    if isinstance(field, dict): return field.get("raw")
+                    if isinstance(field, (int, float)): return field
+                    return None
+
+                # ── FCF real din cashflowStatement ──────────────
+                fcf_from_cf   = None
+                fcf_year_label = None
+                try:
+                    cf_stmts = (cf_data["quoteSummary"]["result"][0]
+                                ["cashflowStatement"]["cashflowStatements"])
+                    # Cel mai recent an (index 0)
+                    cf0 = cf_stmts[0]
+                    op_cf = _rv(cf0.get("totalCashFromOperatingActivities"))
+                    capex = _rv(cf0.get("capitalExpenditures"))
+                    if op_cf is not None:
+                        # CapEx e negativ in Yahoo — scadem (adaugam valoarea negativa)
+                        fcf_from_cf = op_cf + (capex if capex is not None else 0)
+                        end_date = cf0.get("endDate", {})
+                        if isinstance(end_date, dict):
+                            fcf_year_label = end_date.get("fmt", "")[:4]  # ex: "2024"
+                        elif isinstance(end_date, str):
+                            fcf_year_label = end_date[:4]
+                    print(f"[CF] {ticker_sym}: opCF={op_cf} capex={capex} fcf={fcf_from_cf} an={fcf_year_label}")
+                except Exception as e:
+                    print(f"[CF] {ticker_sym}: cashflowStatement indisponibil — {e}")
+
+                # ── Crestere FCF estimata din earningsTrend ─────
+                fcf_growth_1y = None
+                fcf_growth_5y = None
+                try:
+                    trends = (cf_data["quoteSummary"]["result"][0]
+                              ["earningsTrend"]["trend"])
+                    for t in trends:
+                        period = t.get("period", "")
+                        growth_raw = _rv(t.get("earningsEstimate", {}).get("growth"))
+                        if growth_raw is None:
+                            growth_raw = _rv(t.get("revenueEstimate", {}).get("growth"))
+                        if growth_raw is not None:
+                            pct = round(growth_raw * 100, 1)
+                            if period == "+1y" and fcf_growth_1y is None:
+                                fcf_growth_1y = pct
+                            elif period == "5y" and fcf_growth_5y is None:
+                                fcf_growth_5y = pct
+                    print(f"[Trend] {ticker_sym}: growth1Y={fcf_growth_1y} growth5Y={fcf_growth_5y}")
+                except Exception as e:
+                    print(f"[Trend] {ticker_sym}: earningsTrend indisponibil — {e}")
+
+                # Minimul dintre valorile disponibile (cea mai conservatoare)
+                growth_candidates = [v for v in [fcf_growth_1y, fcf_growth_5y] if v is not None]
+                fcf_growth_min = min(growth_candidates) if growth_candidates else None
+                fcf_growth_src = (
+                    "1Y+5Y est." if len(growth_candidates) == 2
+                    else "+1Y est." if fcf_growth_1y is not None
+                    else "5Y est." if fcf_growth_5y is not None
+                    else None
+                )
+
+                # ── Bilant: totalAssets + totalLiabilities ──────
                 total_assets      = None
                 total_liabilities = None
-                bs_url  = (
-                    f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker_sym}"
-                    f"?modules=balanceSheetHistory&formatted=false"
-                )
-                bs_data = await _yahoo_get(client, bs_url)
                 try:
                     stmts = bs_data["quoteSummary"]["result"][0]["balanceSheetHistory"]["balanceSheetStatements"]
                     stmt0 = stmts[0]
-
                     raw = stmt0.get("totalAssets", {})
                     total_assets = raw.get("raw") if isinstance(raw, dict) else (
                         raw if isinstance(raw, (int, float)) else None
                     )
-
                     for liab_key in ("totalLiabilitiesNetMinorityInterest", "totalLiab"):
                         raw_l = stmt0.get(liab_key, {})
                         val_l = raw_l.get("raw") if isinstance(raw_l, dict) else (
@@ -111,7 +181,7 @@ async def proxy(url: str = Query(...)):
                 except Exception:
                     pass
 
-                # Verifica si financialData (uneori exista acolo)
+                # Verifica si financialData
                 if not total_assets:
                     try:
                         fd  = data["quoteSummary"]["result"][0].get("financialData", {})
@@ -130,7 +200,7 @@ async def proxy(url: str = Query(...)):
                     if yf_data.get("total_assets"):
                         total_assets = yf_data["total_assets"]
 
-                # Injecteaza totalAssets + totalLiabilities in financialData
+                # ── Injecteaza toate datele in financialData ─────
                 try:
                     result0 = data["quoteSummary"]["result"][0]
                     fd = result0.setdefault("financialData", {})
@@ -138,6 +208,19 @@ async def proxy(url: str = Query(...)):
                         fd["totalAssets"] = {"raw": total_assets}
                     if total_liabilities:
                         fd["totalLiabilities"] = {"raw": total_liabilities}
+                    # FCF real din cash-flow statement
+                    if fcf_from_cf is not None:
+                        fd["fcfFromCashflow"]  = {"raw": fcf_from_cf}
+                        fd["fcfYearLabel"]     = fcf_year_label or ""
+                    # Crestere FCF estimata
+                    if fcf_growth_1y is not None:
+                        fd["fcfGrowthFwd1Y"]   = {"raw": fcf_growth_1y}
+                    if fcf_growth_5y is not None:
+                        fd["fcfGrowthFwd5Y"]   = {"raw": fcf_growth_5y}
+                    if fcf_growth_min is not None:
+                        fd["fcfGrowthMin"]     = {"raw": fcf_growth_min}
+                    if fcf_growth_src:
+                        fd["fcfGrowthSrc"]     = fcf_growth_src
 
                     def _wrap(d):
                         for k, v in d.items():
