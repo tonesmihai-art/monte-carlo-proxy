@@ -569,6 +569,7 @@ async def gemini_verdict(req: GeminiVerdictRequest):
                 config=genai_types.GenerateContentConfig(
                     max_output_tokens=2200,
                     temperature=0.5,
+                    thinking_config=genai_types.ThinkingConfig(thinking_budget=8000),
                 ),
             )
             text = resp.text.strip() if resp.text else None
