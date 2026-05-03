@@ -329,7 +329,7 @@ Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
         if req.provider == "gemini":
             if not _GEMINI_OK:
                 raise HTTPException(status_code=500, detail="google-genai package nu e instalat pe server")
-            client_g      = google_genai.Client(api_key=api_key, http_options={"api_version": "v1"})
+            client_g      = google_genai.Client(api_key=api_key, http_options={"api_version": "v1alpha"})
             gemini_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
             full_prompt   = f"{system_prompt}\n\n{prompt}"
             raw           = None
@@ -556,7 +556,7 @@ async def gemini_verdict(req: GeminiVerdictRequest):
         " pentru aceste companii bazat pe datele injectate. 3-4 propozitii.[/GENERAL]"
     )
 
-    client_g = google_genai.Client(api_key=api_key, http_options={"api_version": "v1"})
+    client_g = google_genai.Client(api_key=api_key, http_options={"api_version": "v1alpha"})
 
     last_err = None
     for model in ["gemini-2.5-flash", "gemini-2.5-flash-lite"]:
