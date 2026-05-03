@@ -556,17 +556,16 @@ async def gemini_verdict(req: GeminiVerdictRequest):
         " pentru aceste companii bazat pe datele injectate. 3-4 propozitii.[/GENERAL]"
     )
 
-    # ── Apel REST direct — thinkingConfig la root level (SDK il pune gresit) ──
+    # ── Apel REST direct (httpx) — SDK pune thinkingConfig in locul gresit ──
     GEMINI_BASE = "https://generativelanguage.googleapis.com/v1alpha/models"
 
-    # Modele + configuratia lor de thinking
+    # gemini-2.5-flash gandeste intern; thinkingConfig extern nu e suportat
     model_cfgs = [
         (
             "gemini-2.5-flash",
             {
                 "contents": [{"role": "user", "parts": [{"text": f"{system_prompt}\n\n{user_prompt}"}]}],
                 "generationConfig": {"maxOutputTokens": 2200, "temperature": 0.5},
-                "thinkingConfig": {"thinkingBudget": 8000},
             }
         ),
         (
