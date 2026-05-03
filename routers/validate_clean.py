@@ -556,30 +556,49 @@ async def gemini_verdict(req: GeminiVerdictRequest):
         " pentru aceste companii bazat pe datele injectate. 3-4 propozitii.[/GENERAL]"
     )
 
-    client_g = google_genai.Client(api_key=api_key, http_options={"api_version": "v1alpha"})
+    # ── Apel REST direct — thinkingConfig la root level (SDK il pune gresit) ──
+    GEMINI_BASE = "https://generativelanguage.googleapis.com/v1alpha/models"
+
+    # Modele + configuratia lor de thinking
+    model_cfgs = [
+        (
+            "gemini-2.5-flash",
+            {
+                "contents": [{"role": "user", "parts": [{"text": f"{system_prompt}\n\n{user_prompt}"}]}],
+                "generationConfig": {"maxOutputTokens": 2200, "temperature": 0.5},
+                "thinkingConfig": {"thinkingBudget": 8000},
+            }
+        ),
+        (
+            "gemini-2.5-flash-lite",
+            {
+                "contents": [{"role": "user", "parts": [{"text": f"{system_prompt}\n\n{user_prompt}"}]}],
+                "generationConfig": {"maxOutputTokens": 2200, "temperature": 0.5},
+            }
+        ),
+    ]
 
     last_err = None
-    for model in ["gemini-2.5-flash", "gemini-2.5-flash-lite"]:
-        try:
-            resp = client_g.models.generate_content(
-                model=model,
-                contents=[
-                    {"role": "user", "parts": [{"text": f"{system_prompt}\n\n{user_prompt}"}]}
-                ],
-                config=genai_types.GenerateContentConfig(
-                    max_output_tokens=2200,
-                    temperature=0.5,
-                    thinking_config=genai_types.ThinkingConfig(thinking_budget=8000),
-                ),
-            )
-            text = resp.text.strip() if resp.text else None
-            if text:
-                print(f"[gemini-verdict] model={model} OK, {len(text)} chars")
-                return JSONResponse(content={"evaluare": text, "model": model, "has_external": has_external})
-            print(f"[gemini-verdict] model={model} raspuns gol")
-        except Exception as e:
-            last_err = e
-            print(f"[gemini-verdict] model={model} eroare: {e}")
-            continue
+    async with httpx.AsyncClient(timeout=60.0) as hx:
+        for model, payload in model_cfgs:
+            url = f"{GEMINI_BASE}/{model}:generateContent?key={api_key}"
+            try:
+                r = await hx.post(url, json=payload)
+                if r.status_code != 200:
+                    err_msg = r.text[:300]
+                    print(f"[gemini-verdict] model={model} eroare: {r.status_code} {err_msg}")
+                    last_err = err_msg
+                    continue
+                data_r = r.json()
+                parts  = (data_r.get("candidates") or [{}])[0].get("content", {}).get("parts", [])
+                text   = parts[0].get("text", "").strip() if parts else None
+                if text:
+                    print(f"[gemini-verdict] model={model} OK, {len(text)} chars")
+                    return JSONResponse(content={"evaluare": text, "model": model, "has_external": has_external})
+                print(f"[gemini-verdict] model={model} raspuns gol")
+            except Exception as e:
+                last_err = e
+                print(f"[gemini-verdict] model={model} exceptie: {e}")
+                continue
 
     raise HTTPException(status_code=503, detail=f"Gemini indisponibil: {last_err}")
