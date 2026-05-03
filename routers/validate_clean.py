@@ -601,3 +601,180 @@ async def gemini_verdict(req: GeminiVerdictRequest):
                 continue
 
     raise HTTPException(status_code=503, detail=f"Gemini indisponibil: {last_err}")
+
+
+# ── Groq Verdict — evaluare calitativa cu Llama ──────────────────────────
+
+class GroqVerdictRequest(BaseModel):
+    sims: list
+
+
+@router.post("/groq-verdict")
+async def groq_verdict(req: GroqVerdictRequest):
+    groq_key = os.environ.get("GROQ_API_KEY")
+    if not groq_key:
+        raise HTTPException(status_code=500, detail="GROQ_API_KEY lipsa pe server")
+    if not req.sims or len(req.sims) < 2:
+        raise HTTPException(status_code=400, detail="Minim 2 simulari necesare")
+
+    def _fmt(v, decimals=1, pct=False):
+        if v is None:
+            return "\u2014"
+        sign = "+" if float(v) >= 0 else ""
+        return f"{sign}{float(v):.{decimals}f}{'%' if pct else ''}"
+
+    sims_text = ""
+    for s in req.sims:
+        ticker  = s.get("ticker", "?")
+        name    = s.get("name", "")
+        score   = s.get("score")
+        verdict = s.get("verdict", "")
+        period  = s.get("period", 30)
+        sims_text += f"\n\u25b8 {ticker}" + (f" ({name})" if name else "") + ":\n"
+        if score is not None:
+            sims_text += f"  Scor final: {score}/100  Semnal: {verdict}\n"
+        if s.get("margin") is not None:
+            m = float(s["margin"])
+            label = "subevaluat semnificativ" if m > 30 else "subevaluat moderat" if m > 10 else "la valoare justa" if m > -5 else "supraevaluat"
+            sims_text += f"  Marja siguranta vs DCF: {_fmt(m, pct=True)} ({label})\n"
+        if s.get("ret") is not None:
+            sims_text += f"  Randament P50 ({period}z): {_fmt(s['ret'], pct=True)}\n"
+        if s.get("up") is not None and s.get("down") is not None:
+            sims_text += f"  Asimetrie P90/P10: {_fmt(s['up'], pct=True)} / {_fmt(s['down'], pct=True)}\n"
+        if s.get("prob") is not None:
+            sims_text += f"  Probabilitate profit {period}z: {float(s['prob']):.1f}%\n"
+        if s.get("vol") is not None:
+            sims_text += f"  Volatilitate anualizata: {float(s['vol']):.1f}%/an\n"
+        if s.get("div") is not None:
+            sims_text += f"  Dividend yield: {float(s['div']):.2f}%\n"
+        if s.get("sent") is not None:
+            sims_text += f"  Sentiment: {_fmt(s['sent'], decimals=3)}\n"
+        if s.get("dev") is not None:
+            sims_text += f"  Deviatia fata de MA60: {_fmt(s['dev'], pct=True)}\n"
+
+    # Sector P/E context (Damodaran)
+    sector_pe_lines = []
+    for s in req.sims:
+        sector_raw = (s.get("sector") or "").lower().strip()
+        pe_info    = SECTOR_PE_DAMODARAN.get(sector_raw)
+        if pe_info:
+            label, pe_med, div_med = pe_info
+            sector_pe_lines.append(
+                f"  {s['ticker']}: sector {label} \u2014 P/E median = {pe_med}x, div yield mediu = {div_med}%"
+            )
+    sector_pe_context = (
+        "\nDATE SECTORIALE (Damodaran 2025):\n" + "\n".join(sector_pe_lines) + "\n"
+        if sector_pe_lines else ""
+    )
+
+    # Finnhub date externe
+    finnhub_key  = os.environ.get("FINNHUB_KEY", "")
+    tickers_list = [s.get("ticker", "") for s in req.sims if s.get("ticker")]
+    ext_data     = {}
+    has_external = False
+    if finnhub_key and tickers_list:
+        try:
+            ext_data     = await _fetch_external_data(tickers_list, finnhub_key)
+            has_external = any((v.get("reco") or v.get("news")) for v in ext_data.values())
+        except Exception as e:
+            print(f"[groq-verdict] external fetch eroare: {e}")
+
+    ext_lines = []
+    if has_external:
+        ext_lines += ["", "", "DATE INDEPENDENTE DIN SURSE EXTERNE (Finnhub):"]
+        for tkr, entry in ext_data.items():
+            ext_lines.append(f"\n\u25b8 {tkr}:")
+            reco = entry.get("reco")
+            if reco:
+                total = sum(reco.get(k, 0) for k in ["strongBuy","buy","hold","sell","strongSell"])
+                if total > 0:
+                    ext_lines.append(
+                        f"  Recomandari analisti ({reco['period']}): "
+                        f"Strong Buy={reco['strongBuy']}, Buy={reco['buy']}, "
+                        f"Hold={reco['hold']}, Sell={reco['sell']}, "
+                        f"Strong Sell={reco['strongSell']} (total {total} analisti)"
+                    )
+            for nw in entry.get("news", []):
+                ext_lines.append(f"  - {nw['headline']}")
+    ext_text = "\n".join(ext_lines)
+
+    par4 = (
+        "Paragraful 4: Opinie independenta de datele simulate — bazeaza-te EXCLUSIV"
+        " pe recomandarile analistilor si stirile recente de mai sus."
+        " Ce spune consensul pietei? Stirile recente sunt pozitive sau negative?"
+        if has_external else
+        "Paragraful 4: Opinie calitativa independenta de datele simulate —"
+        " pe baza cunostintelor tale despre aceste companii si sectoarele lor,"
+        " ce factori externi ar putea invalida sau confirma rezultatele MC?"
+    )
+    par4_label = "opinie independenta din surse externe Finnhub" if has_external else "opinie calitativa independenta"
+
+    system_prompt = (
+        "Esti un analist financiar senior specializat pe piete europene. "
+        "Raspunzi intotdeauna in romana, cu propozitii scurte si directe. "
+        "Nu folosesti fraze introductive. Intri direct in analiza datelor."
+    )
+
+    user_prompt = (
+        f"Comparatie Monte Carlo (30.000 simulari) pentru {len(req.sims)} actiuni:\n"
+        f"{sims_text}"
+        f"{sector_pe_context}"
+        f"{ext_text}\n"
+        "\nFORMAT OBLIGATORIU — respecta EXACT aceasta structura, separa fiecare element cu o linie goala:\n"
+        "5 paragrafe principale (3-5 propozitii fiecare), dupa fiecare un bloc [OBJ]...[/OBJ] (1-2 propozitii validare externa), la final un bloc [GENERAL]...[/GENERAL] (3-4 propozitii analiza contextuala).\n"
+        "Fara titluri, fara liste, fara text in afara acestui format.\n"
+        "\nParagraf 1: Evalueaza daca scorul matematic reflecta corect realitatea."
+        " Citeaza numerele concrete (scor, marja, probabilitate). Spune daca esti de acord cu castigatorul sau nu.\n"
+        "[OBJ]Compara P/E si dividend yield al castigatorului cu media sectorului din datele Damodaran. Citeaza numerele.[/OBJ]\n"
+        "\nParagraf 2: Compara asimetria P90 vs P10 pentru fiecare actiune."
+        " Cine are cel mai bun raport potential/risc, independent de P50?\n"
+        "[OBJ]Raporteaza volatilitatea la contextul sectorului. Este ridicata sau normala? Citeaza benchmark-ul sectorial.[/OBJ]\n"
+        "\nParagraf 3: Identifica principalele contradictii din date."
+        " Marja contrazice randamentul MC? Dividendul este sustenabil?\n"
+        "[OBJ]Compara dividend yield-ul cu media sectorului. Citeaza numerele.[/OBJ]\n"
+        f"\nParagraf 4: {par4_label} — {par4.split(chr(8212))[-1].strip() if chr(8212) in par4 else par4}\n"
+        "[OBJ]Consensul extern confirma sau contrazice simularea? Citeaza buy/hold/sell count.[/OBJ]\n"
+        "\nParagraf 5: Recomanda o singura actiune pentru intrare acum. Numeste un risc concret.\n"
+        "[OBJ]Ce date externe sustin sau slabesc aceasta recomandare? Fii specific.[/OBJ]\n"
+        "\n[GENERAL]Analiza generala contextuala: contextul macro/sectorial, trenduri de sector, factori externi relevanti."
+        " 3-4 propozitii.[/GENERAL]"
+    )
+
+    GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+    groq_models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+
+    last_err = None
+    async with httpx.AsyncClient(timeout=60.0) as hx:
+        for model in groq_models:
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_prompt},
+                ],
+                "max_tokens": 2200,
+                "temperature": 0.5,
+            }
+            try:
+                r = await hx.post(
+                    GROQ_URL,
+                    json=payload,
+                    headers={"Authorization": f"Bearer {groq_key}"},
+                )
+                if r.status_code != 200:
+                    err_msg = r.text[:300]
+                    print(f"[groq-verdict] model={model} eroare: {r.status_code} {err_msg}")
+                    last_err = err_msg
+                    continue
+                data_r = r.json()
+                text   = (data_r.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+                if text:
+                    print(f"[groq-verdict] model={model} OK, {len(text)} chars")
+                    return JSONResponse(content={"evaluare": text, "model": model, "has_external": has_external})
+                print(f"[groq-verdict] model={model} raspuns gol")
+            except Exception as e:
+                last_err = e
+                print(f"[groq-verdict] model={model} exceptie: {e}")
+                continue
+
+    raise HTTPException(status_code=503, detail=f"Groq indisponibil: {last_err}")
