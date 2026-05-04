@@ -89,15 +89,21 @@ async def proxy(url: str = Query(...)):
                 f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker_sym}"
                 f"?modules=balanceSheetHistory&formatted=false"
             )
-            data, cf_data, bs_data = await asyncio.gather(
+            bsq_url = (
+                f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker_sym}"
+                f"?modules=balanceSheetHistoryQuarterly&formatted=false"
+            )
+            data, cf_data, bs_data, bsq_data = await asyncio.gather(
                 _yahoo_get(client, qs_url),
                 _yahoo_get(client, cf_url),
                 _yahoo_get(client, bs_url),
+                _yahoo_get(client, bsq_url),
                 return_exceptions=True
             )
-            if isinstance(data, Exception):      data    = None
-            if isinstance(cf_data, Exception):   cf_data = None
-            if isinstance(bs_data, Exception):   bs_data = None
+            if isinstance(data, Exception):      data     = None
+            if isinstance(cf_data, Exception):   cf_data  = None
+            if isinstance(bs_data, Exception):   bs_data  = None
+            if isinstance(bsq_data, Exception):  bsq_data = None
 
             if data and data.get("quoteSummary", {}).get("result"):
                 # ── Helper: extrage valoare raw din camp Yahoo ──
@@ -178,6 +184,21 @@ async def proxy(url: str = Query(...)):
                         if val_l is not None:
                             total_liabilities = val_l
                             break
+                    # Fallback quarterly — inside try, la acelasi nivel
+                    if total_liabilities is None and bsq_data:
+                        try:
+                            stmtsQ = bsq_data["quoteSummary"]["result"][0]["balanceSheetHistoryQuarterly"]["balanceSheetStatements"]
+                            stmt0Q = stmtsQ[0] if stmtsQ else {}
+                            for liab_key in ("totalLiabilitiesNetMinorityInterest", "totalLiab"):
+                                raw_l = stmt0Q.get(liab_key, {})
+                                val_l = raw_l.get("raw") if isinstance(raw_l, dict) else (
+                                    raw_l if isinstance(raw_l, (int, float)) else None
+                                )
+                                if val_l is not None:
+                                    total_liabilities = val_l
+                                    break
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
