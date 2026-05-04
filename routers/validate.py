@@ -1,6 +1,6 @@
 """
 Router: POST /validate-fundamentals
-AI validator (Claude Haiku / Gemini Flash) pentru date fundamentale.
+AI validator (Claude Haiku / Groq Llama) pentru date fundamentale.
 Include helper _fetch_reit_live_data pentru REIT-uri.
 """
 
@@ -15,12 +15,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-try:
-    from google import genai as google_genai
-    from google.genai import types as genai_types
-    _GEMINI_OK = True
-except ImportError:
-    _GEMINI_OK = False
+# google-genai eliminat — folosim Groq in loc de Gemini
 
 from yahoo_client import _yahoo_session, HEADERS, _to_finnhub_ticker
 
@@ -92,7 +87,7 @@ async def _fetch_reit_live_data(ticker: str) -> dict:
 # ── Helper: curata JSON din raspunsul AI ─────────────
 
 def _clean_json(raw: str) -> str:
-    """Curata markdown/text din jurul JSON — Gemini poate adauga text extra."""
+    """Curata markdown/text din jurul JSON — LLM-urile pot adauga text extra."""
     raw = raw.strip()
     m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
     if m:
@@ -125,17 +120,17 @@ class ValidateRequest(BaseModel):
     currentPrice: float = 0
     fields: dict = {}
     estimatedFields: list = []
-    provider: str = "claude"   # "claude" | "gemini"
+    provider: str = "claude"   # "claude" | "groq"
 
 
 # ── Endpoint ──────────────────────────────────────────
 
 @router.post("/validate-fundamentals")
 async def validate_fundamentals(req: ValidateRequest):
-    if req.provider == "gemini":
-        api_key = os.environ.get("GEMINI_API_KEY")
+    if req.provider == "groq":
+        api_key = os.environ.get("GROQ_API_KEY")
         if not api_key:
-            raise HTTPException(status_code=500, detail="GEMINI_API_KEY lipsa pe server")
+            raise HTTPException(status_code=500, detail="GROQ_API_KEY lipsa pe server")
     else:
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
@@ -237,51 +232,53 @@ Raspunde DOAR cu JSON valid, fara text suplimentar, fara markdown:
 }}"""
 
     try:
-        if req.provider == "gemini":
-            if not _GEMINI_OK:
-                raise HTTPException(status_code=500, detail="google-genai package nu e instalat pe server")
-            client_g      = google_genai.Client(api_key=api_key, http_options={"api_version": "v1"})
-            gemini_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
-            full_prompt   = f"{system_prompt}\n\n{prompt}"
-            raw           = None
-            last_err      = None
-            for gm in gemini_models:
-                try:
-                    resp = client_g.models.generate_content(
-                        model=gm,
-                        contents=full_prompt,
-                        config=genai_types.GenerateContentConfig(
-                            max_output_tokens=800,
-                            temperature=0.1,
-                        ),
-                    )
+        if req.provider == "groq":
+            GROQ_URL    = "https://api.groq.com/openai/v1/chat/completions"
+            groq_models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
+            raw      = None
+            last_err = None
+            async with httpx.AsyncClient(timeout=60.0) as hx:
+                for gm in groq_models:
+                    payload = {
+                        "model": gm,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user",   "content": prompt},
+                        ],
+                        "max_tokens": 800,
+                        "temperature": 0.1,
+                    }
                     try:
-                        raw_candidate = resp.text.strip()
-                    except Exception:
-                        parts = (resp.candidates or [{}])[0].get("content", {}).get("parts", [])
-                        raw_candidate = parts[0].get("text", "").strip() if parts else None
-                    if raw_candidate:
-                        # Validam JSON-ul INAINTE sa acceptam raspunsul
-                        # Daca e invalid, incercam urmatorul model
-                        try:
-                            json.loads(_clean_json(raw_candidate))
-                            raw = raw_candidate
-                            print(f"[Gemini] model={gm} OK, {len(raw)} chars")
-                            break
-                        except (json.JSONDecodeError, ValueError) as je:
-                            last_err = je
-                            print(f"[Gemini] model={gm} JSON invalid ({je}) — incerc urmatorul model")
+                        r = await hx.post(
+                            GROQ_URL,
+                            json=payload,
+                            headers={"Authorization": f"Bearer {api_key}"},
+                        )
+                        if r.status_code != 200:
+                            last_err = r.text[:300]
+                            print(f"[Groq] model={gm} eroare: {r.status_code} {last_err}")
                             continue
-                    else:
-                        print(f"[Gemini] model={gm} raspuns gol — incerc urmatorul model")
-                except Exception as e:
-                    last_err = e
-                    print(f"[Gemini] model={gm} eroare API: {e}")
-                    continue
+                        raw_candidate = (r.json().get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+                        if raw_candidate:
+                            try:
+                                json.loads(_clean_json(raw_candidate))
+                                raw = raw_candidate
+                                print(f"[Groq] model={gm} OK, {len(raw)} chars")
+                                break
+                            except (json.JSONDecodeError, ValueError) as je:
+                                last_err = je
+                                print(f"[Groq] model={gm} JSON invalid ({je}) — incerc urmatorul")
+                                continue
+                        else:
+                            print(f"[Groq] model={gm} raspuns gol — incerc urmatorul")
+                    except Exception as e:
+                        last_err = e
+                        print(f"[Groq] model={gm} exceptie: {e}")
+                        continue
             if not raw:
                 raise HTTPException(
                     status_code=503,
-                    detail=f"Gemini indisponibil — toate modelele au esuat. Ultima eroare: {last_err}"
+                    detail=f"Groq indisponibil — toate modelele au esuat. Ultima eroare: {last_err}"
                 )
         else:
             claude  = anthropic.Anthropic(api_key=api_key)
