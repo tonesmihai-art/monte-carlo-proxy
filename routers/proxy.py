@@ -39,7 +39,10 @@ async def proxy(url: str = Query(...)):
 
             # ── Chart endpoint ────────────────────────────
             if "/chart/" in url:
-                chart_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker_sym}?interval=1d&range=1y"
+                import re as _re
+                _rm = _re.search(r'range=([\w]+)', url)
+                _range = _rm.group(1) if _rm else '5y'
+                chart_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker_sym}?interval=1d&range={_range}"
                 data = await _yahoo_get(client, chart_url)
                 if data and data.get("chart", {}).get("result"):
                     return JSONResponse(content=data)
@@ -75,35 +78,36 @@ async def proxy(url: str = Query(...)):
                 raise HTTPException(status_code=502, detail="Date istorice indisponibile")
 
             # ── quoteSummary / quote endpoint ─────────────
-            modules = "financialData,defaultKeyStatistics,summaryDetail"
-            qs_url  = (
-                f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker_sym}"
-                f"?modules={modules}&formatted=false"
-            )
-            # Fetch paralel: main + balanceSheet + cashflow + earningsTrend
-            cf_url = (
-                f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker_sym}"
-                f"?modules=cashflowStatement,earningsTrend&formatted=false"
-            )
-            bs_url = (
-                f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker_sym}"
-                f"?modules=balanceSheetHistory&formatted=false"
-            )
-            bsq_url = (
-                f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker_sym}"
-                f"?modules=balanceSheetHistoryQuarterly&formatted=false"
-            )
-            data, cf_data, bs_data, bsq_data = await asyncio.gather(
-                _yahoo_get(client, qs_url),
-                _yahoo_get(client, cf_url),
-                _yahoo_get(client, bs_url),
-                _yahoo_get(client, bsq_url),
-                return_exceptions=True
-            )
-            if isinstance(data, Exception):      data     = None
-            if isinstance(cf_data, Exception):   cf_data  = None
-            if isinstance(bs_data, Exception):   bs_data  = None
-            if isinstance(bsq_data, Exception):  bsq_data = None
+            # US: 1 request combinat (toate modulele) — fara throttle
+            # EU: doar module de baza (cashflow/earningsTrend lipsesc pt EU)
+            bsq_data = None
+            if not is_eu:
+                combined_url = (
+                    f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker_sym}"
+                    f"?modules=financialData,defaultKeyStatistics,summaryDetail,"
+                    f"cashflowStatement,earningsTrend,balanceSheetHistory&formatted=false"
+                )
+                data = await _yahoo_get(client, combined_url)
+                if isinstance(data, Exception): data = None
+                cf_data = data   # acelasi obiect — module incluse
+                bs_data = data
+            else:
+                # EU: core modules only
+                eu_url = (
+                    f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker_sym}"
+                    f"?modules=financialData,defaultKeyStatistics,summaryDetail&formatted=false"
+                )
+                data = await _yahoo_get(client, eu_url)
+                if isinstance(data, Exception): data = None
+                cf_data = None
+                bs_data = None
+                if data and data.get("quoteSummary", {}).get("result"):
+                    bs_url = (
+                        f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker_sym}"
+                        f"?modules=balanceSheetHistory&formatted=false"
+                    )
+                    bs_data = await _yahoo_get(client, bs_url)
+                    if isinstance(bs_data, Exception): bs_data = None
 
             if data and data.get("quoteSummary", {}).get("result"):
                 # ── Helper: extrage valoare raw din camp Yahoo ──
@@ -184,21 +188,28 @@ async def proxy(url: str = Query(...)):
                         if val_l is not None:
                             total_liabilities = val_l
                             break
-                    # Fallback quarterly — inside try, la acelasi nivel
-                    if total_liabilities is None and bsq_data:
-                        try:
-                            stmtsQ = bsq_data["quoteSummary"]["result"][0]["balanceSheetHistoryQuarterly"]["balanceSheetStatements"]
-                            stmt0Q = stmtsQ[0] if stmtsQ else {}
-                            for liab_key in ("totalLiabilitiesNetMinorityInterest", "totalLiab"):
-                                raw_l = stmt0Q.get(liab_key, {})
-                                val_l = raw_l.get("raw") if isinstance(raw_l, dict) else (
-                                    raw_l if isinstance(raw_l, (int, float)) else None
-                                )
-                                if val_l is not None:
-                                    total_liabilities = val_l
-                                    break
-                        except Exception:
-                            pass
+                    # Fallback quarterly — fetch on-demand doar daca lipseste
+                    if total_liabilities is None:
+                        bsq_url = (
+                            f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker_sym}"
+                            f"?modules=balanceSheetHistoryQuarterly&formatted=false"
+                        )
+                        bsq_data = await _yahoo_get(client, bsq_url)
+                        if isinstance(bsq_data, Exception): bsq_data = None
+                        if bsq_data:
+                            try:
+                                stmtsQ = bsq_data["quoteSummary"]["result"][0]["balanceSheetHistoryQuarterly"]["balanceSheetStatements"]
+                                stmt0Q = stmtsQ[0] if stmtsQ else {}
+                                for liab_key in ("totalLiabilitiesNetMinorityInterest", "totalLiab"):
+                                    raw_l = stmt0Q.get(liab_key, {})
+                                    val_l = raw_l.get("raw") if isinstance(raw_l, dict) else (
+                                        raw_l if isinstance(raw_l, (int, float)) else None
+                                    )
+                                    if val_l is not None:
+                                        total_liabilities = val_l
+                                        break
+                            except Exception:
+                                pass
                 except Exception:
                     pass
 
