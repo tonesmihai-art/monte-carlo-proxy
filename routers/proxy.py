@@ -193,12 +193,14 @@ async def proxy(url: str = Query(...)):
                     except Exception:
                         pass
 
-                # Fallback yfinance
-                if not total_assets:
+                # Fallback yfinance — pentru total_assets si total_liabilities
+                if not total_assets or not total_liabilities:
                     loop    = asyncio.get_event_loop()
                     yf_data = await loop.run_in_executor(None, _yf_ticker_data, ticker_sym)
-                    if yf_data.get("total_assets"):
+                    if yf_data.get("total_assets") and not total_assets:
                         total_assets = yf_data["total_assets"]
+                    if yf_data.get("total_liabilities") and not total_liabilities:
+                        total_liabilities = yf_data["total_liabilities"]
 
                 # ── Injecteaza toate datele in financialData ─────
                 try:
